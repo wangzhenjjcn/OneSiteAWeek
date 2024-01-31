@@ -1,0 +1,8 @@
+lxml
+bs4
+selenium
+requests
+pyinstaller
+PyQt6
+flask
+webdriver_manager
