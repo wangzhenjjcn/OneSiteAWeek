@@ -1,4 +1,4 @@
-import os, sys,time,time,json
+import os, sys,time,time,json,re,validators
 import subprocess
 from selenium import webdriver 
 from webdriver_manager.chrome import ChromeDriverManager
@@ -6,7 +6,20 @@ from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-url=input('url:')
+url=''
+# 检查是否为 PyInstaller 打包的环境
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # 如果是，使用临时解压目录
+    app_path = sys._MEIPASS
+else:
+    # 否则使用脚本所在的目录
+    app_path = os.path.dirname(os.path.abspath(__file__))
+while(not validators.url(url)):
+    url=input('url:')
+    if not validators.url(url):
+        print("URL错误：%s，请重新输入"%url)        
+print("URL Pass：%s"%url)
+bin_path = os.path.join(app_path, 'Bin')
 urls = set()
 media_urls = set()
 m3u8_urls = set()
@@ -58,7 +71,6 @@ title = driver.title
 print("Title of the page:", title)
 # 关闭浏览器
 driver.quit()
-
 # # 输出捕获到的媒体文件地址
 for url in media_urls:
     # print(url)
@@ -68,20 +80,14 @@ for url in media_urls:
     fileName=title+'-'+str(url).split('/')[len(str(url).split('/'))-1]
     maxThreads=32
     path=os.path.dirname(os.path.realpath(sys.argv[0]))
-    programPath=path+"\\Bin\\"
+    programPath=bin_path+"\\"
     downloadFoderPath=path+"\\Download\\"
+    if not os.path.exists(downloadFoderPath):
+        os.makedirs(downloadFoderPath)
     processor=programPath+"\\cli.exe"
     command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--enableDelAfterDone","--disableDateInfo"]  #,"--proxyAddress",'http://127.0.0.1:12346'
     returnvar=subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print("DONE:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
-
-
-
 for i in range(0,5):
     print("All Done. Auto Close in %s secs"%(5-i))
     time.sleep(1)
-
-
-
-
-
