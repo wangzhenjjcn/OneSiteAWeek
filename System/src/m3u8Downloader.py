@@ -9,9 +9,7 @@ from selenium.webdriver.chrome.options import Options
 executable_path = sys.argv[0]
 # 获取文件名（不包含路径）
 executable_name = os.path.basename(executable_path)
-
-print("Executable Name:", executable_name)
-
+print("Executable Name:", executable_name," By:WangZhen")
 url=''
 # 检查是否为 PyInstaller 打包的环境
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
