@@ -5,6 +5,12 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+# 获取可执行文件的完整路径
+executable_path = sys.argv[0]
+# 获取文件名（不包含路径）
+executable_name = os.path.basename(executable_path)
+
+print("Executable Name:", executable_name)
 
 url=''
 # 检查是否为 PyInstaller 打包的环境
@@ -73,10 +79,6 @@ print("Title of the page:", title)
 driver.quit()
 # # 输出捕获到的媒体文件地址
 for url in media_urls:
-    # print(url)
-    if("m3u8" not in url):
-        # print("pass[%s]"%url)
-        continue
     fileName=title+'-'+str(url).split('/')[len(str(url).split('/'))-1]
     maxThreads=32
     path=os.path.dirname(os.path.realpath(sys.argv[0]))
@@ -86,8 +88,13 @@ for url in media_urls:
         os.makedirs(downloadFoderPath)
     processor=programPath+"\\cli.exe"
     command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--enableDelAfterDone","--disableDateInfo"]  #,"--proxyAddress",'http://127.0.0.1:12346'
+    print("---Downloading:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
     returnvar=subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("DONE:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
-for i in range(0,5):
-    print("All Done. Auto Close in %s secs"%(5-i))
-    time.sleep(1)
+    print("-DONE:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
+waiteinput=True
+while(waiteinput):
+    inputcheck=input("按下任意键退出，按下Y继续")
+    if inputcheck=='Y' or inputcheck=='y':
+        newapp=subprocess.run(executable_name)
+    for i in range(0,5):
+        print("All Done. Auto Close in %s secs"%(5-i))
