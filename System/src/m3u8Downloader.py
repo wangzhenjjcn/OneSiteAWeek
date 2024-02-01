@@ -24,6 +24,8 @@ while(not validators.url(url)):
         print("URL错误：%s，请重新输入"%url)        
 print("URL Pass：%s"%url)
 bin_path = os.path.join(app_path, 'Bin')
+if not os.path.exists(bin_path):
+    print("Bin Check Faild:[%s]"%bin_path)
 urls = set()
 media_urls = set()
 m3u8_urls = set()
@@ -31,6 +33,7 @@ extensions = ['.flv', '.hlv', '.f4v', '.mp4', '.mp3', '.wma', '.wav', '.m4a', '.
 def page_has_loaded(driver):
     return driver.execute_script("return document.readyState;") == "complete"
 # 自动安装Chrome驱动
+print("Checking Chrome Driver.")
 ChromeDriverManager().install()
 # 启用 Chrome 的日志记录
 capabilities = DesiredCapabilities.CHROME
@@ -42,11 +45,18 @@ chrome_options.add_argument("--log-level=3")
 chrome_options.add_argument("--headless")  # 使用 headless 模式，如果不需要可视化浏览器可以开启
 # chrome_options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
 chrome_options.add_argument("--remote-debugging-port=9222")  # 这通常是为了启用性能日志记录
+chrome_options.add_argument("--autoplay-policy=no-user-gesture-required")  # 允许自动播放
+chrome_options.add_argument("--mute-audio")
+chrome_options.add_argument('--ignore-ssl-errors')
+chrome_options.add_argument("--ignore-certificate-errors")
+print("Loading Chrome.")
 # 初始化webdriver
 driver = webdriver.Chrome(options=chrome_options)
 driver.implicitly_wait(10)  # 设置隐式等待时间为10秒
+print("Opening url:[%s]"%url)
 # 打开目标网页
 driver.get(url)  # 替换为你的目标网址
+print("Loaded url:[%s]"%url)
 logs = driver.get_log('performance')
 while not page_has_loaded(driver):
     # 等待页面加载完成
@@ -75,6 +85,7 @@ title = driver.title
 print("Title of the page:", title)
 # 关闭浏览器
 driver.quit()
+print("Driver exit.")
 # # 输出捕获到的媒体文件地址
 for url in media_urls:
     fileName=title+'-'+str(url).split('/')[len(str(url).split('/'))-1]
@@ -85,14 +96,20 @@ for url in media_urls:
     if not os.path.exists(downloadFoderPath):
         os.makedirs(downloadFoderPath)
     processor=programPath+"\\cli.exe"
-    command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--enableDelAfterDone","--disableDateInfo"]  #,"--proxyAddress",'http://127.0.0.1:12346'
+    command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--timeOut",'20',"--retryCount",'5',"--enableDelAfterDone","--disableDateInfo","--liveRecDur","12:00:00","--enableChaCha20"]  #,"--proxyAddress",'http://127.0.0.1:12346',"--enableBinaryMerge"
     print("---Downloading:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
-    returnvar=subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    returnvar=subprocess.run(command,  stderr=subprocess.DEVNULL)
     print("-DONE:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
 waiteinput=True
 while(waiteinput):
     inputcheck=input("按下任意键退出，按下Y继续")
     if inputcheck=='Y' or inputcheck=='y':
-        newapp=subprocess.run(executable_name)
+        if executable_name.endswith('.py'):
+            waiteinput=False
+            print("代码环境不能使用这个功能")
+        else:
+            newapp=subprocess.run(executable_name)
     for i in range(0,5):
         print("All Done. Auto Close in %s secs"%(5-i))
+        time.sleep(1)
+    waiteinput=False
