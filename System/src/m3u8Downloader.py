@@ -41,20 +41,21 @@ capabilities['goog:loggingPrefs'] = {'performance': 'ALL'}
 # 设置 Chrome 选项
 chrome_options = Options()
 # chrome_options.add_argument("--enable-logging")
+# chrome_options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
 chrome_options.add_argument("--log-level=3") 
 chrome_options.add_argument("--headless")  # 使用 headless 模式，如果不需要可视化浏览器可以开启
-# chrome_options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
 chrome_options.add_argument("--remote-debugging-port=9222")  # 这通常是为了启用性能日志记录
 chrome_options.add_argument("--autoplay-policy=no-user-gesture-required")  # 允许自动播放
 chrome_options.add_argument("--mute-audio")
 chrome_options.add_argument('--ignore-ssl-errors')
 chrome_options.add_argument("--ignore-certificate-errors")
-print("Loading Chrome.")
+# chrome_options.add_argument("--proxy-server=socks5://server:port") # 代理版本
 # 初始化webdriver
+print("Loading Chrome.")
 driver = webdriver.Chrome(options=chrome_options)
 driver.implicitly_wait(10)  # 设置隐式等待时间为10秒
-print("Opening url:[%s]"%url)
 # 打开目标网页
+print("Opening url:[%s]"%url)
 driver.get(url)  # 替换为你的目标网址
 print("Loaded url:[%s]"%url)
 logs = driver.get_log('performance')
@@ -100,16 +101,16 @@ for url in media_urls:
     print("---Downloading:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
     returnvar=subprocess.run(command,  stderr=subprocess.DEVNULL)
     print("-DONE:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
-waiteinput=True
-while(waiteinput):
+waitinput=True
+while(waitinput):
     inputcheck=input("按下任意键退出，按下Y继续")
     if inputcheck=='Y' or inputcheck=='y':
         if executable_name.endswith('.py'):
-            waiteinput=False
+            waitinput=False
             print("代码环境不能使用这个功能")
         else:
             newapp=subprocess.run(executable_name)
     for i in range(0,5):
         print("All Done. Auto Close in %s secs"%(5-i))
         time.sleep(1)
-    waiteinput=False
+    waitinput=False
