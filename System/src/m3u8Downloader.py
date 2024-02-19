@@ -1,15 +1,68 @@
-import os, sys,time,time,json,re,validators
+import os, sys,time,time,json,validators,configparser#,re,requests
 import subprocess
 from selenium import webdriver 
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+
+
 # 获取可执行文件的完整路径
 executable_path = sys.argv[0]
 # 获取文件名（不包含路径）
 executable_name = os.path.basename(executable_path)
+directory_path = os.path.dirname(os.path.abspath(executable_path))
+config_file_path = directory_path+'\\config.ini'
 print("Executable Name:", executable_name," By:WangZhen")
+# Define the path for the config file
+
+# Create a ConfigParser object
+config = configparser.ConfigParser()
+
+# Check if the config file exists
+if not os.path.exists(config_file_path):
+    print("Init Config.ini")
+    # Create config file and set initial values if it doesn't exist
+    config['DEFAULT'] = {
+        'extensions': '.flv, .hlv, .f4v, .mp4, .mp3, .wma, .wav, .m4a, .webm, .ogg, .ogv, .acc, .mov, .mkv, .m3u8, .ts',
+        'debugPort': '9222',
+        'logLevel': '3',
+        'useProxy': 'False',
+        'socks5Proxy': 'socks5://127.0.0.1:12345',
+        'httpProxy': 'http://127.0.0.1:12346',
+        'proxyType' : 'socks5'
+    }
+    # Write the new configuration to file
+    with open(config_file_path, 'w') as configfile:
+        config.write(configfile)
+else:
+    # Read the existing config file
+    print("Read the existing config file:", config_file_path," ")
+    config.read(config_file_path)
+
+# 打印 DEFAULT 节下的配置
+print("DEFAULT section:")
+for key in config['DEFAULT']:
+    print(f"{key}: {config['DEFAULT'][key]}")
+
+# 如果还有其他节，也可以打印出来
+print("Current configuration:")
+for section in config.sections():
+    for key in config[section]:
+        print(f"{key}: {config[section][key]}")
+ 
+#Settings
+extensions = config['DEFAULT']['extensions']
+debugPort=config['DEFAULT']['debugPort']
+logLevel=config['DEFAULT']['logLevel']
+useProxy=config['DEFAULT']['useProxy']
+socks5Proxy=config['DEFAULT']['socks5Proxy']
+httpProxy=config['DEFAULT']['httpProxy']
+proxyType=config['DEFAULT']['proxyType']
+proxyServer=httpProxy
+if(proxyType=="socks5"):
+    proxyServer=socks5Proxy
+
 url=''
 # 检查是否为 PyInstaller 打包的环境
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -29,9 +82,12 @@ if not os.path.exists(bin_path):
 urls = set()
 media_urls = set()
 m3u8_urls = set()
-extensions = ['.flv', '.hlv', '.f4v', '.mp4', '.mp3', '.wma', '.wav', '.m4a', '.webm', '.ogg', '.ogv', '.acc', '.mov', '.mkv', '.m3u8', '.ts']
 def page_has_loaded(driver):
     return driver.execute_script("return document.readyState;") == "complete"
+# proxies = {
+#     'http': 'socks5://127.0.0.1:12345',
+#     'https': 'socks5://127.0.0.1:12345'
+# }
 # 自动安装Chrome驱动
 print("Checking Chrome Driver.")
 ChromeDriverManager().install()
@@ -42,14 +98,16 @@ capabilities['goog:loggingPrefs'] = {'performance': 'ALL'}
 chrome_options = Options()
 # chrome_options.add_argument("--enable-logging")
 # chrome_options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
-chrome_options.add_argument("--log-level=3") 
+chrome_options.add_argument("--log-level="+logLevel) 
+chrome_options.add_argument("--remote-debugging-port="+debugPort)  # 这通常是为了启用性能日志记录
 chrome_options.add_argument("--headless")  # 使用 headless 模式，如果不需要可视化浏览器可以开启
-chrome_options.add_argument("--remote-debugging-port=9222")  # 这通常是为了启用性能日志记录
 chrome_options.add_argument("--autoplay-policy=no-user-gesture-required")  # 允许自动播放
 chrome_options.add_argument("--mute-audio")
 chrome_options.add_argument('--ignore-ssl-errors')
 chrome_options.add_argument("--ignore-certificate-errors")
-# chrome_options.add_argument("--proxy-server=socks5://server:port") # 代理版本
+if useProxy==True:
+    print("--proxyAddress:",proxyServer)
+    chrome_options.add_argument("--proxy-server="+proxyServer) # 代理版本
 # 初始化webdriver
 print("Loading Chrome.")
 driver = webdriver.Chrome(options=chrome_options)
@@ -97,14 +155,19 @@ for url in media_urls:
     if not os.path.exists(downloadFoderPath):
         os.makedirs(downloadFoderPath)
     processor=programPath+"\\cli.exe"
-    command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--timeOut",'20',"--retryCount",'5',"--enableDelAfterDone","--disableDateInfo","--liveRecDur","12:00:00","--enableChaCha20"]  #,"--proxyAddress",'http://127.0.0.1:12346',"--enableBinaryMerge"
+    if useProxy==True:
+        print("--proxyAddress:",proxyServer)
+        command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--timeOut",'20',"--retryCount",'5',"--enableDelAfterDone","--disableDateInfo","--liveRecDur","12:00:00","--enableChaCha20","--proxyAddress",proxyServer]  #,"--enableBinaryMerge"
+    else:
+        print("--NOproxyAddress:")
+        command = [processor, url, "--workDir",downloadFoderPath,"--saveName",fileName,"--maxThreads",str(maxThreads),"--timeOut",'20',"--retryCount",'5',"--enableDelAfterDone","--disableDateInfo","--liveRecDur","12:00:00","--enableChaCha20"]  #,"--proxyAddress",'http://127.0.0.1:12346',"--enableBinaryMerge"
     print("---Downloading:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
     returnvar=subprocess.run(command,  stderr=subprocess.DEVNULL)
     print("-DONE:[%s]File:[%s]Path:[%s]"%(url,fileName,downloadFoderPath))
 waitinput=True
 while(waitinput):
     inputcheck=input("按下任意键退出，按下Y继续")
-    if inputcheck=='Y' or inputcheck=='y':
+    if inputcheck=='Y' or inputcheck=='y'or inputcheck==''or inputcheck==' ':
         if executable_name.endswith('.py'):
             waitinput=False
             print("代码环境不能使用这个功能")
