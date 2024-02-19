@@ -960,4 +960,3 @@ if __name__ == "__main__":
         driver.quit()
         print("Driver exit.")
     except: pass
-    
