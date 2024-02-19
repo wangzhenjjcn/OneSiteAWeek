@@ -192,6 +192,22 @@ Begin VB.Form VideoDownloader
       TabIndex        =   4
       Top             =   1320
       Width           =   9135
+      Begin VB.CommandButton CommandNextpage 
+         Caption         =   "下一页"
+         Height          =   615
+         Left            =   2520
+         TabIndex        =   35
+         Top             =   240
+         Width           =   1215
+      End
+      Begin VB.CommandButton CommandLastPage 
+         Caption         =   "上一页"
+         Height          =   615
+         Left            =   1200
+         TabIndex        =   34
+         Top             =   240
+         Width           =   1215
+      End
       Begin VB.CommandButton CommandCheckDetial 
          Caption         =   "查看详情"
          Height          =   495
@@ -204,8 +220,9 @@ Begin VB.Form VideoDownloader
          BackColor       =   &H8000000A&
          Height          =   4695
          Left            =   360
-         ScaleHeight     =   4635
-         ScaleWidth      =   3075
+         ScaleHeight     =   309
+         ScaleMode       =   3  'Pixel
+         ScaleWidth      =   205
          TabIndex        =   28
          Top             =   4800
          Width           =   3135
