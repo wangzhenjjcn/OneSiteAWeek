@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python
 #-*- coding:utf-8 -*-
 import os, sys,time,time,json,validators,configparser#,re,requests
-import requests,threading
+import requests,threading,pyperclip
 
 from io import BytesIO
 import subprocess
@@ -405,7 +405,7 @@ class Application(Application_ui):
         for pianyuan,pianyuanid in pianYuanList:
             juji[str(pianyuan).strip()]={}
             juji[str(pianyuan).strip()]["ids"]=[]
-            juji[str(pianyuan).strip()]["ids"].append(pianyuanid)
+            juji[str(pianyuan).strip()]["ids"].append(str(pianyuanid).strip())
             
             pianYuanTextList.append(str(pianyuan))
             
@@ -419,18 +419,63 @@ class Application(Application_ui):
             juji[str(pianyuan).strip()]['texts']=jujipianyuanidTextList
             juji[str(pianyuan).strip()]['links']=jujipianyuanidLinkList
         print("在线片源：",pianYuanTextList)
-                
+        juji['livesources']=pianYuanTextList
         qingXiDuTextList=[]
         exclude_texts = ["播放地址", "猜你喜欢", "正在热播", "热播电影频道", "最新资讯", "剧情介绍","热播综艺频道","热播","热播剧集频道"]
+        juji['sources']={}
         for qxdtext in get_filtered_h3_text(pagesource,exclude_texts):
-            qingXiDuTextList.append(qxdtext)
+            qingXiDuTextList.append(str(qxdtext).strip())
+            juji[str(qxdtext).strip()]={}
             # qxdtextkey=str(qxdtext)
             downloadsinfo=get_download_list_text_and_link(pagesource,qxdtext)
+            downloadTextList=[]
+            downloadLinkList=[]
+            juji['sources'][str(qxdtext).strip()]={}
             for text, href in downloadsinfo:
                 juji[str(qxdtext).strip()][str(text).strip()]=href
+                downloadTextList.append(str(text).strip())
+                downloadLinkList.append(str(href)) 
                 print(f'Download:   Text: {text}, Href: {href}')
+            
+            # juji[str(qxdtext).strip()]['links']=downloadLinkList
+            
         print("清晰度：",qingXiDuTextList)
-        juji['sources']=qingXiDuTextList
+        juji['sources']['texts']=qingXiDuTextList
+        
+        if( len(juji['livesources'])>0):
+            self.ComboDetialPlaySource['values']=juji['livesources']
+            self.ComboDetialPlaySource.set(juji['livesources'][0])
+        else:
+            self.ComboDetialPlaySource.set("本片暂无此源")    
+        
+        if( len(juji[juji['livesources'][0]]['texts'])>0):
+            self.ComboDetialPlaySourceEpisodes['values']=juji[juji['livesources'][0]]['texts']
+            self.ComboDetialPlaySourceEpisodes.set( juji[juji['livesources'][0]]['texts'][0])
+        else:
+            self.ComboDetialPlaySourceEpisodes.set("本片暂无此源")
+        
+        
+        # if(juji[juji['livesources'][0]]):
+        #     self.ComboDetialType['values']=juji['sources']['texts']
+        #     self.ComboDetialType.set(juji['sources']['texts'][0])
+        #     copydata=""
+        #     for text in juji[juji['livesources'][0]]:
+        #         data=str(juji[juji['livesources'][0]][text]).strip()
+        #         copydata+=data+'\n'
+        #     pyperclip.copy(str(copydata))
+        #     # 验证（从剪贴板粘贴字符串）
+        #     text_pasted = pyperclip.paste()
+        #     print(text_pasted)  # 输出应该和 text_to_copy 一致
+        # else:
+        #     self.ComboDetialType.set("本片暂无此源")
+        
+        
+        # 清空Listbox中的所有项
+        self.ListDownloadSource.delete(0, 'end')
+        for text in juji[juji['sources']['texts'][0]]:
+            self.ListDownloadSource.insert('end', text)
+        
+        
         
         print("======================")
         print(juji)
@@ -461,6 +506,19 @@ class Application(Application_ui):
         self.LabelDetialIntroduction.config(text=mtext)
         self.LabelDetialName.config(text=title)
         # print("Title of the page:", title)
+
+    def initGUIData(self):
+        global guidata
+        if not guidata:
+            guidata={}
+        
+        pass
+
+    def setGUIData(self):
+        global juji
+        
+        
+        pass
 
     def doSearch(self,pageurl):
         global searchResults,currentIndex,currentImages
@@ -587,15 +645,15 @@ def readSearchResaultData(page_source):
                     if p.text.startswith('导演：'):
                         p_dy=str(p.text).strip()
                     if p.text.startswith('主演：'):
-                        p_zy=p.text
+                        p_zy=str(p.text).strip()
                     if p.text.startswith('分类：'):
-                        p_fl=p.text
+                        p_fl=str(p.text).strip()
                     if p.text.startswith('地区：'):
-                        p_dq=p.text
+                        p_dq=str(p.text).strip()
                     if p.text.startswith('年份：'):
-                        p_nf=p.text
+                        p_nf=str(p.text).strip()
                     if p.text.startswith('简介：'):
-                        p_jj=p.text
+                        p_jj=str(p.text).strip()
                
             # 获取class为myui-vodlist__thumb的a标签的data-original属性
             a_thumb_tag = li.find('a', class_='myui-vodlist__thumb')
@@ -890,8 +948,8 @@ if __name__ == "__main__":
     next_page_link=""
     mainUrl="https://m.meijume.com/"
     juji={}
+    guidata={}
     driver=None
-     
     
 
     top = Tk()
