@@ -5,6 +5,8 @@ __pycache__/
 
 #downloads
 *.ts
+*.mp4
+*.m3u8
 
 # C extensions
 *.so
