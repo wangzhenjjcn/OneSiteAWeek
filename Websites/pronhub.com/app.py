@@ -418,6 +418,69 @@ class PornhubScraper:
                 'best_m3u8_url': ''
             }
     
+    def is_video_completed(self, viewkey):
+        """检查视频是否已完成采集"""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
+            log_file = os.path.join(folder_path, 'collection_log.txt')
+            
+            if not os.path.exists(log_file):
+                return False
+            
+            # 读取日志文件
+            with open(log_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 检查是否包含成功标记
+            return '采集状态: 成功' in content
+            
+        except Exception as e:
+            return False
+    
+    def create_collection_log(self, video_data, folder_path, success=True, error_msg=''):
+        """创建采集日志"""
+        try:
+            import datetime
+            
+            log_file = os.path.join(folder_path, 'collection_log.txt')
+            
+            # 获取当前时间
+            current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 构建日志内容
+            log_content = f"""采集日志
+================
+
+采集时间: {current_time}
+视频ID: {video_data.get('video_id', 'N/A')}
+ViewKey: {video_data.get('viewkey', 'N/A')}
+视频标题: {video_data.get('title', 'N/A')}
+视频链接: {video_data.get('video_url', 'N/A')}
+
+采集信息:
+- 缩略图: {'已下载' if video_data.get('thumbnail_url') else '无'}
+- 预览视频: {'已下载' if video_data.get('preview_url') else '无'}
+- 发布时间: {video_data.get('publish_time', 'N/A')}
+- 分类数量: {len(video_data.get('categories', []))}
+- m3u8地址: {'已获取' if video_data.get('best_m3u8_url') else '无'}
+
+采集状态: {'成功' if success else '失败'}
+"""
+            
+            if not success and error_msg:
+                log_content += f"错误信息: {error_msg}\n"
+            
+            # 写入日志文件
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write(log_content)
+            
+            return True
+            
+        except Exception as e:
+            print(f"创建采集日志失败: {e}")
+            return False
+    
     def download_file(self, url, filepath):
         """下载文件"""
         max_retries = SCRAPER_CONFIG.get('max_retries', 3)
@@ -764,6 +827,13 @@ class PornhubScraper:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
         
+        # 检查是否已存在且采集完成
+        if SCRAPER_CONFIG.get('skip_existing', True):
+            if self.is_video_completed(viewkey):
+                if DEBUG['verbose']:
+                    print(f"跳过已完成的视频: {video_data['title']}")
+                return True
+        
         if DEBUG['verbose']:
             print(f"处理视频: {video_data['title']}")
             print(f"文件夹: {folder_path}")
@@ -771,21 +841,34 @@ class PornhubScraper:
         # 创建文件夹
         os.makedirs(folder_path, exist_ok=True)
         
-        # 添加下载任务到队列
-        if video_data['thumbnail_url']:
-            thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
-            self.add_download_task(video_data['thumbnail_url'], thumbnail_path, "缩略图")
-        
-        if video_data['preview_url']:
-            preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
-            self.add_download_task(video_data['preview_url'], preview_path, "预览视频")
-        
-        # 创建HTML页面
-        html_path = self.create_html_page(video_data, folder_path)
-        if DEBUG['verbose']:
-            print(f"HTML页面创建成功: {html_path}")
-        
-        return True
+        try:
+            # 添加下载任务到队列
+            download_tasks = []
+            if video_data['thumbnail_url']:
+                thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
+                self.add_download_task(video_data['thumbnail_url'], thumbnail_path, "缩略图")
+                download_tasks.append(("缩略图", thumbnail_path))
+            
+            if video_data['preview_url']:
+                preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
+                self.add_download_task(video_data['preview_url'], preview_path, "预览视频")
+                download_tasks.append(("预览视频", preview_path))
+            
+            # 创建HTML页面
+            html_path = self.create_html_page(video_data, folder_path)
+            if DEBUG['verbose']:
+                print(f"HTML页面创建成功: {html_path}")
+            
+            # 创建采集日志（初始状态）
+            self.create_collection_log(video_data, folder_path, success=False, error_msg="处理中...")
+            
+            return True
+            
+        except Exception as e:
+            error_msg = f"处理视频时出错: {e}"
+            print(error_msg)
+            self.create_collection_log(video_data, folder_path, success=False, error_msg=error_msg)
+            return False
     
     def scrape_pages(self, start_page=1, end_page=None, auto_detect_last=True):
         """抓取指定页数的视频数据"""
