@@ -184,8 +184,43 @@ class PornhubScraper:
                 "button:contains('18')"
             ]
             
-            explicit_wait = SELENIUM_CONFIG.get('explicit_wait', 10)
+            # 首先尝试通过文本内容查找按钮
+            try:
+                # 等待页面完全加载
+                time.sleep(3)
+                
+                # 尝试通过文本内容查找按钮
+                buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                for button in buttons:
+                    try:
+                        button_text = button.text.strip()
+                        if any(keyword in button_text for keyword in ['18', '我年满', '满十八']):
+                            if button.is_displayed() and button.is_enabled():
+                                if DEBUG['verbose']:
+                                    print(f"找到年龄验证按钮: {button_text}")
+                                
+                                # 滚动到按钮位置
+                                self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
+                                time.sleep(1)
+                                
+                                # 点击按钮
+                                button.click()
+                                time.sleep(2)
+                                
+                                if DEBUG['verbose']:
+                                    print("✓ 年龄验证完成")
+                                
+                                return True
+                    except Exception as e:
+                        if DEBUG['verbose']:
+                            print(f"点击按钮时出错: {e}")
+                        continue
+                        
+            except Exception as e:
+                if DEBUG['verbose']:
+                    print(f"通过文本查找按钮失败: {e}")
             
+            # 如果文本查找失败，尝试CSS选择器
             for selector in age_button_selectors:
                 try:
                     # 尝试查找年龄验证按钮
@@ -196,6 +231,10 @@ class PornhubScraper:
                     if age_button and age_button.is_displayed():
                         if DEBUG['verbose']:
                             print("发现年龄验证按钮，正在点击...")
+                        
+                        # 滚动到按钮位置
+                        self.driver.execute_script("arguments[0].scrollIntoView(true);", age_button)
+                        time.sleep(1)
                         
                         # 点击按钮
                         age_button.click()
@@ -551,10 +590,6 @@ class PornhubScraper:
                 if views_element and views_element.parent and 'views' in views_element.parent.get('class', []):
                     views = views_element.get_text(strip=True) + '次观看'
             
-            # 获取上传时间
-            added_element = li_element.find('var', class_='added')
-            added_time = added_element.get_text(strip=True) if added_element else ''
-            
             # 调试信息
             if DEBUG['verbose']:
                 if preview_url:
@@ -579,8 +614,7 @@ class PornhubScraper:
                 'preview_url': preview_url,
                 'duration': duration,
                 'uploader': uploader,
-                'views': views,
-                'added_time': added_time
+                'views': views
             }
             
             # 添加详细信息
