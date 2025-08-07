@@ -358,226 +358,174 @@ class PornhubScraper:
             return False
     
     def handle_age_verification(self):
-        """处理年龄验证弹窗"""
+        """处理年龄验证弹窗 - 强制点击版本"""
         try:
-            # 根据实际HTML结构更新选择器
-            age_button_selectors = [
-                "button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton",
-                "button.gtm-event-age-verification",
-                "button.js-closeAgeModal",
-                "button.buttonOver18",
-                "button.orangeButton",
-                "button[data-event='age_verification']",
-                "button[data-label='over18_enter']",
-                ".orangeButton",
-                "button:contains('我年满 18 岁')",
-                "button:contains('18')",
-                "button:contains('输入')"
-            ]
+            print("开始处理年龄验证...")
             
-            # 首先尝试通过文本内容查找按钮（减少等待时间）
+            # 无论模态框是否可见，都尝试查找并点击按钮
+            button_found = False
+            
+            # 方法1: 通过XPath查找包含特定文本的按钮
             try:
-                # 等待页面完全加载（减少等待时间）
-                time.sleep(1)  # 从3秒减少到1秒
+                # 查找包含完整文本"我年满 18 岁 - 输入"的按钮
+                age_button = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), '我年满 18 岁 - 输入')]"))
+                )
                 
-                # 尝试通过文本内容查找按钮
-                buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                for button in buttons:
+                if age_button:
+                    print(f"✓ 找到年龄验证按钮: '{age_button.text}'")
+                    
+                    # 滚动到按钮位置
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", age_button)
+                    time.sleep(0.5)
+                    
+                    # 点击按钮
+                    age_button.click()
+                    print("✓ 成功点击年龄验证按钮")
+                    button_found = True
+                    
+                    # 等待模态框消失
                     try:
-                        button_text = button.text.strip()
-                        if any(keyword in button_text for keyword in ['18', '我年满', '满十八', '输入']):
-                            if button.is_displayed() and button.is_enabled():
-                                if DEBUG['verbose']:
-                                    print(f"找到年龄验证按钮: {button_text}")
-                                
-                                # 滚动到按钮位置
-                                self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                                time.sleep(0.5)  # 减少等待时间
-                                
-                                # 点击按钮
-                                button.click()
-                                time.sleep(1)  # 减少等待时间
-                                
-                                if DEBUG['verbose']:
-                                    print("✓ 年龄验证完成")
-                                
-                                return True
-                    except Exception as e:
-                        if DEBUG['verbose']:
-                            print(f"点击按钮时出错: {e}")
-                        continue
-                        
-            except Exception as e:
-                if DEBUG['verbose']:
-                    print(f"通过文本查找按钮失败: {e}")
-            
-            # 如果文本查找失败，尝试CSS选择器（减少等待时间）
-            for selector in age_button_selectors:
+                        WebDriverWait(self.driver, 5).until(
+                            EC.invisibility_of_element_located((By.ID, "js-ageDisclaimerModal"))
+                        )
+                        print("✓ 年龄验证模态框已消失，验证成功")
+                        return True
+                    except TimeoutException:
+                        print("⚠️  点击后模态框未消失，可能验证失败")
+                        return False
+                    
+            except TimeoutException:
+                print("通过XPath未找到年龄验证按钮，尝试其他方法...")
+                # 如果完整文本匹配失败，尝试部分文本匹配
                 try:
-                    # 尝试查找年龄验证按钮（减少等待时间）
-                    age_button = WebDriverWait(self.driver, 2).until(  # 从3秒减少到2秒
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    age_button = WebDriverWait(self.driver, 2).until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), '我年满 18 岁')]"))
                     )
                     
-                    if age_button and age_button.is_displayed():
-                        if DEBUG['verbose']:
-                            print(f"发现年龄验证按钮，正在点击... (选择器: {selector})")
+                    if age_button:
+                        print(f"✓ 通过部分文本匹配找到年龄验证按钮: '{age_button.text}'")
                         
                         # 滚动到按钮位置
                         self.driver.execute_script("arguments[0].scrollIntoView(true);", age_button)
-                        time.sleep(0.5)  # 减少等待时间
+                        time.sleep(0.5)
                         
                         # 点击按钮
                         age_button.click()
+                        print("✓ 成功点击年龄验证按钮")
+                        button_found = True
                         
-                        # 等待页面更新（减少等待时间）
-                        time.sleep(1)  # 从2秒减少到1秒
-                        
-                        if DEBUG['verbose']:
-                            print("✓ 年龄验证完成")
-                        
-                        return True
-                        
+                        # 等待模态框消失
+                        try:
+                            WebDriverWait(self.driver, 5).until(
+                                EC.invisibility_of_element_located((By.ID, "js-ageDisclaimerModal"))
+                            )
+                            print("✓ 年龄验证模态框已消失，验证成功")
+                            return True
+                        except TimeoutException:
+                            print("⚠️  点击后模态框未消失，可能验证失败")
+                            return False
                 except TimeoutException:
-                    continue
-                except Exception as e:
-                    if DEBUG['verbose']:
-                        print(f"尝试点击年龄验证按钮时出错: {e}")
-                    continue
+                    print("部分文本匹配也失败")
+            except Exception as e:
+                print(f"XPath方法失败: {e}")
             
-            # 如果没有找到按钮，尝试通过JavaScript点击
-            try:
+            # 方法2: 如果XPath失败，尝试CSS选择器
+            if not button_found:
+                age_button_selectors = [
+                    "button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton",
+                    "button.gtm-event-age-verification",
+                    "button.js-closeAgeModal",
+                    "button.buttonOver18",
+                    "button.orangeButton",
+                    "button[data-event='age_verification']",
+                    "button[data-label='over18_enter']",
+                    ".orangeButton"
+                ]
+                
+                for selector in age_button_selectors:
+                    try:
+                        age_button = WebDriverWait(self.driver, 2).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                        )
+                        
+                        if age_button:
+                            print(f"✓ 通过CSS选择器找到按钮: {selector}")
+                            
+                            # 滚动到按钮位置
+                            self.driver.execute_script("arguments[0].scrollIntoView(true);", age_button)
+                            time.sleep(0.5)
+                            
+                            # 点击按钮
+                            age_button.click()
+                            print("✓ 成功点击年龄验证按钮")
+                            button_found = True
+                            
+                            # 等待模态框消失
+                            try:
+                                WebDriverWait(self.driver, 5).until(
+                                    EC.invisibility_of_element_located((By.ID, "js-ageDisclaimerModal"))
+                                )
+                                print("✓ 年龄验证模态框已消失，验证成功")
+                                return True
+                            except TimeoutException:
+                                print("⚠️  点击后模态框未消失，可能验证失败")
+                                return False
+                            break
+                            
+                    except TimeoutException:
+                        continue
+                    except Exception as e:
+                        print(f"CSS选择器 {selector} 失败: {e}")
+                        continue
+            
+            # 方法3: 如果CSS选择器失败，尝试JavaScript点击
+            if not button_found:
+                print("尝试JavaScript方法...")
                 js_click_scripts = [
                     "document.querySelector('button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton').click();",
                     "document.querySelector('button.gtm-event-age-verification').click();",
                     "document.querySelector('button.js-closeAgeModal').click();",
                     "document.querySelector('button.buttonOver18').click();",
                     "document.querySelector('button.orangeButton').click();",
-                    "document.querySelector('button[data-event=\"age_verification\"]').click();",
-                    "document.querySelector('button[data-label=\"over18_enter\"]').click();",
-                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('18')).click();",
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('我年满 18 岁 - 输入')).click();",
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('我年满 18 岁')).click();",
                     "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('输入')).click();"
                 ]
                 
                 for script in js_click_scripts:
                     try:
                         self.driver.execute_script(script)
-                        if DEBUG['verbose']:
-                            print("✓ 通过JavaScript完成年龄验证")
-                        time.sleep(1)  # 减少等待时间
-                        return True
-                    except Exception:
-                        continue
+                        print("✓ 通过JavaScript成功点击年龄验证按钮")
+                        button_found = True
                         
-            except Exception as e:
-                if DEBUG['verbose']:
-                    print(f"JavaScript点击年龄验证按钮失败: {e}")
+                        # 等待模态框消失
+                        try:
+                            WebDriverWait(self.driver, 5).until(
+                                EC.invisibility_of_element_located((By.ID, "js-ageDisclaimerModal"))
+                            )
+                            print("✓ 年龄验证模态框已消失，验证成功")
+                            return True
+                        except TimeoutException:
+                            print("⚠️  点击后模态框未消失，可能验证失败")
+                            return False
+                        break
+                    except Exception as e:
+                        print(f"JavaScript脚本失败: {e}")
+                        continue
             
-            # 如果没有找到年龄验证按钮，可能是已经验证过了
-            if DEBUG['verbose']:
-                print("未发现年龄验证按钮，可能已经验证过或不需要验证")
-            
-            return False
-            
+            if not button_found:
+                print("⚠️  未找到可点击的年龄验证按钮")
+                return False
+            else:
+                print("⚠️  点击了按钮但模态框未消失")
+                return False
+                
         except Exception as e:
-            if DEBUG['verbose']:
-                print(f"处理年龄验证时出错: {e}")
+            print(f"处理年龄验证时出错: {e}")
             return False
     
-    def handle_age_verification_immediate(self):
-        """立即处理年龄验证弹窗（不等待页面完全加载）"""
-        try:
-            print("立即检查年龄验证按钮...")
-            
-            # 根据实际HTML结构更新选择器
-            age_button_selectors = [
-                "button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton",
-                "button.gtm-event-age-verification",
-                "button.js-closeAgeModal",
-                "button.buttonOver18",
-                "button.orangeButton",
-                "button[data-event='age_verification']",
-                "button[data-label='over18_enter']",
-                ".orangeButton",
-                "button:contains('我年满 18 岁')",
-                "button:contains('18')",
-                "button:contains('输入')"
-            ]
-            
-            # 立即尝试通过文本内容查找按钮
-            try:
-                # 不等待，立即查找
-                buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                for button in buttons:
-                    try:
-                        button_text = button.text.strip()
-                        if any(keyword in button_text for keyword in ['18', '我年满', '满十八', '输入']):
-                            if button.is_displayed() and button.is_enabled():
-                                print(f"立即找到年龄验证按钮: {button_text}")
-                                
-                                # 立即点击按钮
-                                button.click()
-                                time.sleep(0.5)  # 短暂等待
-                                
-                                print("✓ 立即完成年龄验证")
-                                return True
-                    except Exception as e:
-                        continue
-                        
-            except Exception as e:
-                print(f"立即查找按钮失败: {e}")
-            
-            # 立即尝试CSS选择器
-            for selector in age_button_selectors:
-                try:
-                    # 立即查找，不等待
-                    age_buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for age_button in age_buttons:
-                        if age_button.is_displayed() and age_button.is_enabled():
-                            print(f"立即发现年龄验证按钮，正在点击... (选择器: {selector})")
-                            
-                            # 立即点击按钮
-                            age_button.click()
-                            time.sleep(0.5)  # 短暂等待
-                            
-                            print("✓ 立即完成年龄验证")
-                            return True
-                            
-                except Exception as e:
-                    continue
-            
-            # 立即尝试JavaScript点击
-            try:
-                js_click_scripts = [
-                    "document.querySelector('button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton').click();",
-                    "document.querySelector('button.gtm-event-age-verification').click();",
-                    "document.querySelector('button.js-closeAgeModal').click();",
-                    "document.querySelector('button.buttonOver18').click();",
-                    "document.querySelector('button.orangeButton').click();",
-                    "document.querySelector('button[data-event=\"age_verification\"]').click();",
-                    "document.querySelector('button[data-label=\"over18_enter\"]').click();",
-                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('18')).click();",
-                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('输入')).click();"
-                ]
-                
-                for script in js_click_scripts:
-                    try:
-                        self.driver.execute_script(script)
-                        print("✓ 立即通过JavaScript完成年龄验证")
-                        time.sleep(0.5)  # 短暂等待
-                        return True
-                    except Exception:
-                        continue
-                        
-            except Exception as e:
-                print(f"立即JavaScript点击失败: {e}")
-            
-            print("立即检查未发现年龄验证按钮")
-            return False
-            
-        except Exception as e:
-            print(f"立即处理年龄验证时出错: {e}")
-            return False
+
     
     def get_page(self, url):
         """获取页面内容"""
@@ -622,12 +570,30 @@ class PornhubScraper:
                 
                 # 处理年龄验证页面
                 if page_type == "age_verification":
-                    print("检测到年龄验证页面，立即处理...")
+                    print("检测到年龄验证页面，开始处理...")
                     if not SELENIUM_CONFIG.get('fast_mode', False):
-                        self.handle_age_verification_immediate()
-                        # 再次检查页面类型
+                        age_verification_result = self.handle_age_verification()
+                        if age_verification_result:
+                            print("✓ 年龄验证成功")
+                            # 重新获取页面源码
+                            page_source = self.driver.page_source
+                            page_type = self.check_page_type(page_source)
+                            print(f"验证后页面类型: {page_type}")
+                        else:
+                            print("⚠️  年龄验证失败")
+                
+                # 无论页面类型如何，都尝试处理年龄验证（以防模态框不可见但按钮存在）
+                if not SELENIUM_CONFIG.get('fast_mode', False):
+                    print("尝试处理年龄验证（强制检查）...")
+                    age_verification_result = self.handle_age_verification()
+                    if age_verification_result:
+                        print("✓ 年龄验证成功")
+                        # 重新获取页面源码
                         page_source = self.driver.page_source
                         page_type = self.check_page_type(page_source)
+                        print(f"验证后页面类型: {page_type}")
+                    else:
+                        print("⚠️  年龄验证失败或不需要验证")
                 
                 # 等待页面基本加载完成（减少等待时间）
                 explicit_wait = SELENIUM_CONFIG.get('explicit_wait', 8)  # 减少到8秒
@@ -639,10 +605,6 @@ class PornhubScraper:
                     # 如果超时，尝试获取当前页面源码
                     if DEBUG['verbose']:
                         print("页面加载超时，尝试获取当前内容...")
-                
-                # 再次处理年龄验证（以防第一次没找到）
-                if not SELENIUM_CONFIG.get('fast_mode', False) and page_type == "age_verification":
-                    self.handle_age_verification()
                 
                 # 关闭广告标签页
                 self.close_ad_tabs()
@@ -1822,14 +1784,31 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 "contact your representatives"
             ]
             
-            # 检查是否为年龄验证页面
-            age_verification_indicators = [
-                "我年满 18 岁",
-                "这是个成人网站",
-                "ageDisclaimer",
-                "modalWrapMTubes",
-                "gtm-event-age-verification"
-            ]
+            # 检查是否为年龄验证页面 - 通过检查模态框是否存在来判断
+            try:
+                # 尝试查找年龄验证模态框
+                modal = self.driver.find_element(By.ID, "js-ageDisclaimerModal")
+                if modal.is_displayed():
+                    print("✓ 检测到年龄验证模态框可见")
+                    return "age_verification"
+                else:
+                    print("✓ 年龄验证模态框存在但不可见，可能已验证")
+                    # 如果模态框存在但不可见，说明年龄验证已完成，返回正常内容
+                    return "normal_content"
+            except:
+                # 如果找不到模态框，检查页面源码中的年龄验证指示器
+                age_verification_indicators = [
+                    "我年满 18 岁",
+                    "这是个成人网站",
+                    "ageDisclaimer",
+                    "modalWrapMTubes",
+                    "gtm-event-age-verification"
+                ]
+                
+                for indicator in age_verification_indicators:
+                    if indicator in page_source:
+                        print(f"✓ 检测到年龄验证页面: {indicator}")
+                        return "age_verification"
             
             # 检查是否为正常内容页面
             normal_content_indicators = [
@@ -1846,12 +1825,6 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 if indicator.lower() in page_source_lower:
                     print(f"⚠️  检测到地区限制页面: {indicator}")
                     return "region_restricted"
-            
-            # 检查年龄验证
-            for indicator in age_verification_indicators:
-                if indicator in page_source:
-                    print(f"✓ 检测到年龄验证页面: {indicator}")
-                    return "age_verification"
             
             # 检查正常内容
             for indicator in normal_content_indicators:
