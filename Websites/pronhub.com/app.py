@@ -9,14 +9,24 @@ import random
 import threading
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import PROXY_CONFIG, HEADERS, BASE_URL, SCRAPER_CONFIG, OUTPUT_CONFIG, DEBUG, SSL_CONFIG
+from config import PROXY_CONFIG, HEADERS, BASE_URL, SCRAPER_CONFIG, OUTPUT_CONFIG, DEBUG, SSL_CONFIG, SELENIUM_CONFIG
+
+# Selenium相关导入
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
 
 # 禁用SSL警告
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class PornhubScraper:
-    def __init__(self):
+    def __init__(self, use_selenium=None):
         self.base_url = BASE_URL
         self.proxies = PROXY_CONFIG
         self.headers = HEADERS
@@ -24,9 +34,286 @@ class PornhubScraper:
         self.download_results = {}
         self.download_lock = threading.Lock()
         
+        # 确定是否使用Selenium
+        if use_selenium is None:
+            self.use_selenium = SELENIUM_CONFIG.get('use_selenium', True)
+        else:
+            self.use_selenium = use_selenium
+        
+        self.driver = None
+        
+        # 如果使用Selenium，初始化浏览器
+        if self.use_selenium:
+            self.init_selenium_driver()
+    
+    def init_selenium_driver(self):
+        """初始化Selenium WebDriver"""
+        try:
+            print("正在初始化Selenium WebDriver...")
+            
+            # 检测是否在GitHub Actions环境中
+            is_github_actions = self.is_github_actions_environment()
+            
+            if is_github_actions:
+                print("检测到GitHub Actions环境，禁用代理设置")
+            
+            # Chrome选项配置
+            chrome_options = Options()
+            
+            # 基本设置
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-plugins')
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # 根据配置禁用图片加载
+            if SELENIUM_CONFIG.get('disable_images', True):
+                chrome_options.add_argument('--disable-images')
+            
+            # 根据配置禁用JavaScript
+            if SELENIUM_CONFIG.get('disable_javascript', False):
+                chrome_options.add_argument('--disable-javascript')
+            
+            # 用户代理设置
+            chrome_options.add_argument(f'--user-agent={HEADERS["User-Agent"]}')
+            
+            # 代理设置（仅在非GitHub Actions环境中）
+            if not is_github_actions and PROXY_CONFIG.get('http'):
+                proxy_url = PROXY_CONFIG['http']
+                if proxy_url.startswith('socks5://'):
+                    # 对于SOCKS5代理，需要特殊处理
+                    chrome_options.add_argument(f'--proxy-server={proxy_url}')
+                    print(f"✓ 已配置SOCKS5代理: {proxy_url}")
+                else:
+                    chrome_options.add_argument(f'--proxy-server={proxy_url}')
+                    print(f"✓ 已配置代理: {proxy_url}")
+            elif is_github_actions:
+                print("⚠️  GitHub Actions环境中跳过代理设置")
+            
+            # 窗口设置
+            window_size = SELENIUM_CONFIG.get('window_size', '1920,1080')
+            chrome_options.add_argument(f'--window-size={window_size}')
+            
+            # 无头模式设置
+            if SELENIUM_CONFIG.get('headless', False):
+                chrome_options.add_argument('--headless')
+            else:
+                chrome_options.add_argument('--start-maximized')
+            
+            # 自动下载并配置ChromeDriver
+            service = Service(ChromeDriverManager().install())
+            
+            # 创建WebDriver
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            # 设置页面加载超时
+            page_load_timeout = SELENIUM_CONFIG.get('page_load_timeout', 30)
+            self.driver.set_page_load_timeout(page_load_timeout)
+            
+            # 设置隐式等待时间
+            implicit_wait = SELENIUM_CONFIG.get('implicit_wait', 10)
+            self.driver.implicitly_wait(implicit_wait)
+            
+            # 执行反检测脚本
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            print("✓ Selenium WebDriver初始化成功")
+            
+        except Exception as e:
+            print(f"✗ Selenium WebDriver初始化失败: {e}")
+            print("将回退到requests模式")
+            self.use_selenium = False
+            self.driver = None
+    
+    def is_github_actions_environment(self):
+        """检测是否在GitHub Actions环境中"""
+        github_actions_indicators = [
+            'GITHUB_ACTIONS',  # GitHub Actions环境变量
+            'CI',              # 通用CI环境变量
+            '/opt/hostedtoolcache',  # GitHub Actions工具缓存路径
+            '/home/runner',    # GitHub Actions运行器路径
+            '/usr/local/share',  # GitHub Actions共享路径
+        ]
+        
+        # 检查环境变量
+        for indicator in github_actions_indicators:
+            if os.environ.get(indicator):
+                return True
+        
+        # 检查当前工作目录
+        current_dir = os.getcwd()
+        for indicator in github_actions_indicators:
+            if indicator in current_dir:
+                return True
+        
+        # 检查系统路径
+        import platform
+        if platform.system() == 'Linux':
+            # 在Linux上检查常见路径
+            for path in ['/opt/hostedtoolcache', '/home/runner', '/usr/local/share']:
+                if os.path.exists(path):
+                    return True
+        
+        return False
+    
+    def close_driver(self):
+        """关闭WebDriver"""
+        if self.driver:
+            try:
+                self.driver.quit()
+                print("✓ WebDriver已关闭")
+            except Exception as e:
+                print(f"关闭WebDriver时出错: {e}")
+            finally:
+                                self.driver = None
+    
+    def handle_age_verification(self):
+        """处理年龄验证弹窗"""
+        try:
+            # 等待年龄验证按钮出现
+            age_button_selectors = [
+                "button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton",
+                "button[data-event='age_verification']",
+                "button[data-label='over18_enter']",
+                ".orangeButton",
+                "button:contains('我年满 18 岁')",
+                "button:contains('18')"
+            ]
+            
+            explicit_wait = SELENIUM_CONFIG.get('explicit_wait', 10)
+            
+            for selector in age_button_selectors:
+                try:
+                    # 尝试查找年龄验证按钮
+                    age_button = WebDriverWait(self.driver, 3).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                    
+                    if age_button and age_button.is_displayed():
+                        if DEBUG['verbose']:
+                            print("发现年龄验证按钮，正在点击...")
+                        
+                        # 点击按钮
+                        age_button.click()
+                        
+                        # 等待页面更新
+                        time.sleep(2)
+                        
+                        if DEBUG['verbose']:
+                            print("✓ 年龄验证完成")
+                        
+                        return True
+                        
+                except TimeoutException:
+                    continue
+                except Exception as e:
+                    if DEBUG['verbose']:
+                        print(f"尝试点击年龄验证按钮时出错: {e}")
+                    continue
+            
+            # 如果没有找到按钮，尝试通过JavaScript点击
+            try:
+                js_click_scripts = [
+                    "document.querySelector('button.gtm-event-age-verification').click();",
+                    "document.querySelector('button[data-event=\"age_verification\"]').click();",
+                    "document.querySelector('button[data-label=\"over18_enter\"]').click();",
+                    "document.querySelector('.orangeButton').click();",
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('18')).click();"
+                ]
+                
+                for script in js_click_scripts:
+                    try:
+                        self.driver.execute_script(script)
+                        if DEBUG['verbose']:
+                            print("✓ 通过JavaScript完成年龄验证")
+                        time.sleep(2)
+                        return True
+                    except Exception:
+                        continue
+                        
+            except Exception as e:
+                if DEBUG['verbose']:
+                    print(f"JavaScript点击年龄验证按钮失败: {e}")
+            
+            # 如果没有找到年龄验证按钮，可能是已经验证过了
+            if DEBUG['verbose']:
+                print("未发现年龄验证按钮，可能已经验证过或不需要验证")
+            
+            return False
+            
+        except Exception as e:
+            if DEBUG['verbose']:
+                print(f"处理年龄验证时出错: {e}")
+            return False
+    
     def get_page(self, url):
         """获取页面内容"""
+        # 如果使用Selenium且driver可用
+        if self.use_selenium and self.driver:
+            return self.get_page_selenium(url)
+        else:
+            return self.get_page_requests(url)
+    
+    def get_page_selenium(self, url):
+        """使用Selenium获取页面内容"""
         max_retries = SCRAPER_CONFIG.get('max_retries', 3)
+        
+        for attempt in range(max_retries):
+            try:
+                if DEBUG['verbose']:
+                    print(f"Selenium访问: {url}")
+                
+                # 访问页面
+                self.driver.get(url)
+                
+                # 等待页面加载完成
+                explicit_wait = SELENIUM_CONFIG.get('explicit_wait', 10)
+                WebDriverWait(self.driver, explicit_wait).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # 处理年龄验证弹窗
+                self.handle_age_verification()
+                
+                # 获取页面源码
+                page_source = self.driver.page_source
+                
+                if DEBUG['verbose']:
+                    print(f"✓ Selenium成功获取页面: {len(page_source)} 字符")
+                
+                return page_source
+                
+            except TimeoutException as e:
+                print(f"Selenium页面加载超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(3)
+                continue
+                
+            except WebDriverException as e:
+                print(f"Selenium错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                continue
+                
+            except Exception as e:
+                print(f"Selenium获取页面失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                continue
+        
+        print(f"Selenium所有重试都失败了: {url}")
+        return None
+    
+    def get_page_requests(self, url):
+        """使用requests获取页面内容"""
+        max_retries = SCRAPER_CONFIG.get('max_retries', 3)
+        
+        # 检测是否在GitHub Actions环境中
+        is_github_actions = self.is_github_actions_environment()
         
         for attempt in range(max_retries):
             try:
@@ -38,13 +325,21 @@ class PornhubScraper:
                     'allow_redirects': True,  # 允许重定向
                 }
                 
-                # 尝试不使用代理
-                if attempt == 0:
-                    response = requests.get(url, **kwargs)
+                # 在GitHub Actions环境中不使用代理
+                if is_github_actions:
+                    if attempt == 0:
+                        response = requests.get(url, **kwargs)
+                    else:
+                        # 重试时也不使用代理
+                        response = requests.get(url, **kwargs)
                 else:
-                    # 后续尝试使用代理
-                    kwargs['proxies'] = self.proxies
-                    response = requests.get(url, **kwargs)
+                    # 尝试不使用代理
+                    if attempt == 0:
+                        response = requests.get(url, **kwargs)
+                    else:
+                        # 后续尝试使用代理
+                        kwargs['proxies'] = self.proxies
+                        response = requests.get(url, **kwargs)
                 
                 response.raise_for_status()
                 return response.text
@@ -485,6 +780,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         """下载文件"""
         max_retries = SCRAPER_CONFIG.get('max_retries', 3)
         
+        # 检测是否在GitHub Actions环境中
+        is_github_actions = self.is_github_actions_environment()
+        
         for attempt in range(max_retries):
             try:
                 # 完全忽略SSL验证
@@ -495,13 +793,21 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                     'allow_redirects': True,  # 允许重定向
                 }
                 
-                # 尝试不使用代理
-                if attempt == 0:
-                    response = requests.get(url, **kwargs)
+                # 在GitHub Actions环境中不使用代理
+                if is_github_actions:
+                    if attempt == 0:
+                        response = requests.get(url, **kwargs)
+                    else:
+                        # 重试时也不使用代理
+                        response = requests.get(url, **kwargs)
                 else:
-                    # 后续尝试使用代理
-                    kwargs['proxies'] = self.proxies
-                    response = requests.get(url, **kwargs)
+                    # 尝试不使用代理
+                    if attempt == 0:
+                        response = requests.get(url, **kwargs)
+                    else:
+                        # 后续尝试使用代理
+                        kwargs['proxies'] = self.proxies
+                        response = requests.get(url, **kwargs)
                 
                 response.raise_for_status()
                 
@@ -1127,6 +1433,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         finally:
             # 停止下载工作线程
             self.stop_download_workers()
+            
+            # 关闭WebDriver
+            self.close_driver()
 
 if __name__ == "__main__":
     scraper = PornhubScraper()

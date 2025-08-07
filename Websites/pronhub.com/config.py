@@ -59,6 +59,18 @@ FILE_EXTENSIONS = {
     'preview': '.webm',
 }
 
+# Selenium设置
+SELENIUM_CONFIG = {
+    'use_selenium': True,  # 是否使用Selenium
+    'headless': False,     # 是否无头模式（不显示浏览器窗口）
+    'disable_images': True,  # 是否禁用图片加载
+    'disable_javascript': False,  # 是否禁用JavaScript
+    'window_size': '1920,1080',  # 窗口大小
+    'page_load_timeout': 30,  # 页面加载超时时间
+    'implicit_wait': 10,   # 隐式等待时间
+    'explicit_wait': 10,   # 显式等待时间
+}
+
 # 调试设置
 DEBUG = {
     'verbose': False,     # 详细输出（默认关闭）
