@@ -75,7 +75,7 @@ SELENIUM_CONFIG = {
     'ad_monitor_interval': 5,  # 广告监控间隔（秒）
     'ignore_ssl_errors': True,  # 是否忽略SSL错误
     'ignore_cross_origin': True,  # 是否忽略跨域拦截
-    'fast_mode': True,  # 快速模式，减少等待时间
+    'fast_mode': False,  # 快速模式，减少等待时间
 }
 
 # 调试设置
