@@ -870,6 +870,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             # 创建采集日志（初始状态）
             self.create_collection_log(video_data, folder_path, success=False, error_msg="处理中...")
             
+            # 立即更新日志为成功状态（因为HTML页面已创建）
+            self.create_collection_log(video_data, folder_path, success=True)
+            
             return True
             
         except Exception as e:
@@ -978,6 +981,97 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             print(f"\n总共找到 {len(all_videos)} 个视频")
         return all_videos
     
+    def scrape_and_download_pages(self, start_page=1, end_page=None, auto_detect_last=True):
+        """边解析边下载页面"""
+        all_videos = []
+        current_page = start_page
+        success_count = 0
+        
+        # 获取第1页来确定总页数
+        if auto_detect_last and end_page is None:
+            if DEBUG['verbose']:
+                print("获取第1页信息以确定总页数...")
+            first_page_url = f"{self.base_url}?page=1"
+            first_page_content = self.get_page(first_page_url)
+            
+            if first_page_content:
+                total_pages = self.get_total_pages(first_page_content)
+                if total_pages:
+                    end_page = total_pages
+                    if DEBUG['verbose']:
+                        print(f"检测到总页数: {total_pages}")
+                else:
+                    if DEBUG['verbose']:
+                        print("无法检测总页数，使用默认设置")
+                    end_page = SCRAPER_CONFIG.get('end_page', 5)
+            else:
+                if DEBUG['verbose']:
+                    print("第1页获取失败，使用默认设置")
+                end_page = SCRAPER_CONFIG.get('end_page', 5)
+        
+        if DEBUG['verbose']:
+            print(f"开始抓取页面: {start_page} - {end_page}")
+        
+        while current_page <= end_page:
+            if DEBUG['verbose']:
+                print(f"\n正在抓取第 {current_page} 页...")
+            url = f"{self.base_url}?page={current_page}"
+            
+            html_content = self.get_page(url)
+            if not html_content:
+                print(f"第 {current_page} 页获取失败，跳过")
+                current_page += 1
+                continue
+            
+            # 解析当前页面的视频
+            videos = self.parse_video_list(html_content)
+            if DEBUG['verbose']:
+                print(f"第 {current_page} 页找到 {len(videos)} 个视频")
+            
+            # 立即处理当前页面的视频
+            for i, video_data in enumerate(videos, 1):
+                if DEBUG['verbose']:
+                    print(f"处理第 {current_page} 页第 {i}/{len(videos)} 个视频...")
+                if self.process_video(video_data):
+                    success_count += 1
+                    all_videos.append(video_data)
+            
+            # 检查是否为最后一页
+            if auto_detect_last and self.check_is_last_page(html_content):
+                if DEBUG['verbose']:
+                    print(f"检测到第 {current_page} 页为最后一页，停止抓取")
+                break
+            
+            # 添加随机延迟，避免被封
+            time.sleep(random.uniform(SCRAPER_CONFIG['delay_min'], SCRAPER_CONFIG['delay_max']))
+            current_page += 1
+        
+        if DEBUG['verbose']:
+            print(f"\n总共找到 {len(all_videos)} 个视频")
+        
+        return success_count
+    
+    def update_collection_logs_from_results(self, download_results):
+        """根据下载结果更新采集日志"""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            # 从下载结果中提取视频信息
+            processed_videos = []
+            for filepath in download_results.keys():
+                # 从文件路径提取viewkey
+                folder_name = os.path.basename(os.path.dirname(filepath))
+                if folder_name and folder_name != 'data':
+                    # 这里需要从其他地方获取视频数据，暂时跳过
+                    continue
+            
+            # 由于边解析边下载，日志更新会在process_video中完成
+            if DEBUG['verbose']:
+                print("采集日志已在处理过程中更新")
+                    
+        except Exception as e:
+            print(f"更新采集日志时出错: {e}")
+    
     def run(self, start_page=None, end_page=None, auto_detect_last=None):
         """运行抓取程序"""
         if start_page is None:
@@ -1024,7 +1118,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             # 更新所有视频的采集日志
             self.update_collection_logs_from_results(download_results)
             
-            print(f"\n抓取完成！成功处理 {success_count}/{len(videos)} 个视频")
+            print(f"\n抓取完成！成功处理 {success_count} 个视频")
             script_dir = os.path.dirname(os.path.abspath(__file__))
             data_folder = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'])
             if DEBUG['verbose']:
