@@ -999,6 +999,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         data_folder = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'])
         os.makedirs(data_folder, exist_ok=True)
         
+        if DEBUG['verbose']:
+            print(f"数据保存目录: {data_folder}")
+        
         try:
             # 抓取视频列表
             videos = self.scrape_pages(start_page, end_page, auto_detect_last)
