@@ -64,11 +64,11 @@ SELENIUM_CONFIG = {
     'use_selenium': True,  # 是否使用Selenium
     'headless': False,     # 是否无头模式（不显示浏览器窗口）
     'disable_images': True,  # 是否禁用图片加载
-    'disable_javascript': False,  # 是否禁用JavaScript
+    'disable_javascript': True,  # 是否禁用JavaScript（改为True以提高性能）
     'window_size': '1920,1080',  # 窗口大小
-    'page_load_timeout': 30,  # 页面加载超时时间
-    'implicit_wait': 10,   # 隐式等待时间
-    'explicit_wait': 10,   # 显式等待时间
+    'page_load_timeout': 15,  # 页面加载超时时间（减少到15秒）
+    'implicit_wait': 5,   # 隐式等待时间（减少到5秒）
+    'explicit_wait': 5,   # 显式等待时间（减少到5秒）
 }
 
 # 调试设置
