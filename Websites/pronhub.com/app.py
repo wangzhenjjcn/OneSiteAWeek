@@ -548,21 +548,23 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 
                 url, filepath, task_type = task
                 
-                print(f"线程 {worker_id}: 开始下载 {task_type} - {os.path.basename(filepath)}")
+                # 只在显示工作线程信息时输出
+                if SCRAPER_CONFIG.get('show_worker_info', False):
+                    print(f"线程 {worker_id}: 开始下载 {task_type} - {os.path.basename(filepath)}")
                 
                 success = self.download_file(url, filepath)
                 
                 with self.download_lock:
                     self.download_results[filepath] = success
-                    if success:
+                    if success and SCRAPER_CONFIG.get('show_worker_info', False):
                         print(f"线程 {worker_id}: ✓ {task_type} 下载成功")
-                    else:
+                    elif not success:
                         print(f"线程 {worker_id}: ✗ {task_type} 下载失败")
                 
                 self.download_queue.task_done()
                 
             except Exception as e:
-                # print(f"线程 {worker_id} 错误: {e}")
+                print(f"线程 {worker_id} 错误: {e}")  # 只显示错误信息
                 try:
                     self.download_queue.task_done()
                 except ValueError:
@@ -870,6 +872,51 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             self.create_collection_log(video_data, folder_path, success=False, error_msg=error_msg)
             return False
     
+    def update_collection_logs(self, videos, download_results):
+        """更新所有视频的采集日志"""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            for video_data in videos:
+                if not video_data or not video_data.get('viewkey'):
+                    continue
+                
+                viewkey = video_data['viewkey']
+                folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
+                
+                # 检查该视频是否有下载任务
+                has_downloads = False
+                download_success = True
+                
+                # 检查缩略图下载
+                if video_data.get('thumbnail_url'):
+                    thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
+                    if thumbnail_path in download_results:
+                        has_downloads = True
+                        if not download_results[thumbnail_path]:
+                            download_success = False
+                
+                # 检查预览视频下载
+                if video_data.get('preview_url'):
+                    preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
+                    if preview_path in download_results:
+                        has_downloads = True
+                        if not download_results[preview_path]:
+                            download_success = False
+                
+                # 更新日志
+                if has_downloads:
+                    if download_success:
+                        self.create_collection_log(video_data, folder_path, success=True)
+                    else:
+                        self.create_collection_log(video_data, folder_path, success=False, error_msg="部分文件下载失败")
+                else:
+                    # 没有下载任务，只创建HTML页面
+                    self.create_collection_log(video_data, folder_path, success=True)
+                    
+        except Exception as e:
+            print(f"更新采集日志时出错: {e}")
+    
     def scrape_pages(self, start_page=1, end_page=None, auto_detect_last=True):
         """抓取指定页数的视频数据"""
         all_videos = []
@@ -966,6 +1013,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             total_downloads = len(download_results)
             successful_downloads = sum(1 for success in download_results.values() if success)
             print(f"下载统计: {successful_downloads}/{total_downloads} 个文件下载成功")
+            
+            # 更新所有视频的采集日志
+            self.update_collection_logs(videos, download_results)
             
             print(f"\n抓取完成！成功处理 {success_count}/{len(videos)} 个视频")
             script_dir = os.path.dirname(os.path.abspath(__file__))
