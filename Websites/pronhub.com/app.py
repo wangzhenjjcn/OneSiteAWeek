@@ -575,7 +575,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
     def start_download_workers(self):
         """启动下载工作线程"""
         self.download_workers = []
-        num_threads = SCRAPER_CONFIG.get('download_threads', 10)
+        num_threads = SCRAPER_CONFIG.get('download_threads', 30)
         
         for i in range(num_threads):
             worker = threading.Thread(target=self.download_worker, args=(i+1,))
@@ -583,7 +583,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             worker.start()
             self.download_workers.append(worker)
         
-        print(f"启动 {num_threads} 个下载线程")
+        # 只在调试模式下显示启动信息
+        if DEBUG['verbose']:
+            print(f"启动 {num_threads} 个下载线程")
     
     def stop_download_workers(self):
         """停止下载工作线程"""
@@ -595,7 +597,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         for worker in self.download_workers:
             worker.join()
         
-        print("所有下载线程已停止")
+        # 只在调试模式下显示停止信息
+        if DEBUG['verbose']:
+            print("所有下载线程已停止")
     
     def add_download_task(self, url, filepath, task_type):
         """添加下载任务到队列"""
