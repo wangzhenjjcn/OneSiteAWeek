@@ -1007,16 +1007,8 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             print(f"数据保存目录: {data_folder}")
         
         try:
-            # 抓取视频列表
-            videos = self.scrape_pages(start_page, end_page, auto_detect_last)
-            
-            # 处理每个视频
-            success_count = 0
-            for i, video_data in enumerate(videos, 1):
-                if DEBUG['verbose']:
-                    print(f"\n处理第 {i}/{len(videos)} 个视频...")
-                if self.process_video(video_data):
-                    success_count += 1
+            # 启动边解析边下载
+            success_count = self.scrape_and_download_pages(start_page, end_page, auto_detect_last)
             
             # 等待所有下载完成
             if DEBUG['verbose']:
@@ -1030,7 +1022,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 print(f"下载完成: {successful_downloads}/{total_downloads} 个文件")
             
             # 更新所有视频的采集日志
-            self.update_collection_logs(videos, download_results)
+            self.update_collection_logs_from_results(download_results)
             
             print(f"\n抓取完成！成功处理 {success_count}/{len(videos)} 个视频")
             script_dir = os.path.dirname(os.path.abspath(__file__))
