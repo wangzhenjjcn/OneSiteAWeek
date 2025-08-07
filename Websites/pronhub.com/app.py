@@ -564,7 +564,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 self.download_queue.task_done()
                 
             except Exception as e:
-                # print(f"线程 {worker_id} 错误: {e}")  # 只显示错误信息
+                # 只显示真正的错误，忽略空错误和超时
+                if str(e) and not any(empty_error in str(e).lower() for empty_error in ['timeout', 'empty', 'none']):
+                    print(f"线程 {worker_id} 错误: {e}")
                 try:
                     self.download_queue.task_done()
                 except ValueError:
