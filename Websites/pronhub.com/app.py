@@ -116,11 +116,11 @@ class PornhubScraper:
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             
             # 设置页面加载超时
-            page_load_timeout = SELENIUM_CONFIG.get('page_load_timeout', 30)
+            page_load_timeout = SELENIUM_CONFIG.get('page_load_timeout', 15)
             self.driver.set_page_load_timeout(page_load_timeout)
             
             # 设置隐式等待时间
-            implicit_wait = SELENIUM_CONFIG.get('implicit_wait', 10)
+            implicit_wait = SELENIUM_CONFIG.get('implicit_wait', 5)
             self.driver.implicitly_wait(implicit_wait)
             
             # 执行反检测脚本
