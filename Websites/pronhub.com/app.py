@@ -1095,10 +1095,6 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                     <span class="info-value">{video_data['views']}</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">上传时间:</span>
-                    <span class="info-value">{video_data['added_time']}</span>
-                </div>
-                <div class="info-item">
                     <span class="info-label">发布时间:</span>
                     <span class="info-value">{video_data.get('publish_time', 'N/A')}</span>
                 </div>
