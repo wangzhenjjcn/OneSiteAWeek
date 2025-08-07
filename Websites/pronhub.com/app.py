@@ -949,7 +949,8 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         print(f"开始抓取页面: {start_page} - {end_page}")
         
         while current_page <= end_page:
-            print(f"\n正在抓取第 {current_page} 页...")
+            if DEBUG['verbose']:
+                print(f"\n正在抓取第 {current_page} 页...")
             url = f"{self.base_url}?page={current_page}"
             
             html_content = self.get_page(url)
@@ -959,19 +960,22 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 continue
             
             videos = self.parse_video_list(html_content)
-            print(f"第 {current_page} 页找到 {len(videos)} 个视频")
+            if DEBUG['verbose']:
+                print(f"第 {current_page} 页找到 {len(videos)} 个视频")
             all_videos.extend(videos)
             
             # 检查是否为最后一页
             if auto_detect_last and self.check_is_last_page(html_content):
-                print(f"检测到第 {current_page} 页为最后一页，停止抓取")
+                if DEBUG['verbose']:
+                    print(f"检测到第 {current_page} 页为最后一页，停止抓取")
                 break
             
             # 添加随机延迟，避免被封
             time.sleep(random.uniform(SCRAPER_CONFIG['delay_min'], SCRAPER_CONFIG['delay_max']))
             current_page += 1
         
-        print(f"\n总共找到 {len(all_videos)} 个视频")
+        if DEBUG['verbose']:
+            print(f"\n总共找到 {len(all_videos)} 个视频")
         return all_videos
     
     def run(self, start_page=None, end_page=None, auto_detect_last=None):
@@ -1015,13 +1019,15 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                     success_count += 1
             
             # 等待所有下载完成
-            print(f"\n等待所有下载任务完成...")
+            if DEBUG['verbose']:
+                print(f"\n等待所有下载任务完成...")
             download_results = self.wait_for_downloads()
             
             # 统计下载结果
             total_downloads = len(download_results)
             successful_downloads = sum(1 for success in download_results.values() if success)
-            print(f"下载统计: {successful_downloads}/{total_downloads} 个文件下载成功")
+            if total_downloads > 0:
+                print(f"下载完成: {successful_downloads}/{total_downloads} 个文件")
             
             # 更新所有视频的采集日志
             self.update_collection_logs(videos, download_results)
@@ -1029,7 +1035,8 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             print(f"\n抓取完成！成功处理 {success_count}/{len(videos)} 个视频")
             script_dir = os.path.dirname(os.path.abspath(__file__))
             data_folder = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'])
-            print(f"数据保存在 {data_folder} 文件夹中")
+            if DEBUG['verbose']:
+                print(f"数据保存在 {data_folder} 文件夹中")
             
         finally:
             # 停止下载工作线程
