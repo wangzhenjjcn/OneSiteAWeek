@@ -39,8 +39,10 @@ SCRAPER_CONFIG = {
     'timeout': 30,        # 请求超时时间
     'max_retries': 5,     # 最大重试次数（增加到5次）
     'verify_ssl': False,  # 是否验证SSL证书
-    'download_threads': 10,  # 下载线程数
+    'download_threads': 30,  # 下载线程数（增加到30个）
     'auto_detect_last': True,  # 是否自动检测最后一页
+    'skip_existing': True,  # 是否跳过已存在的ID
+    'show_worker_info': False,  # 是否显示工作线程信息
 }
 
 # 输出设置
