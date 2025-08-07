@@ -70,13 +70,18 @@ class PornhubScraper:
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
-            # 根据配置禁用图片加载
-            if SELENIUM_CONFIG.get('disable_images', True):
-                chrome_options.add_argument('--disable-images')
-            
-            # 根据配置禁用JavaScript
-            if SELENIUM_CONFIG.get('disable_javascript', False):
-                chrome_options.add_argument('--disable-javascript')
+            # 禁用不必要的功能以提高性能
+            chrome_options.add_argument('--disable-images')
+            chrome_options.add_argument('--disable-javascript')
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+            chrome_options.add_argument('--disable-logging')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+            chrome_options.add_argument('--disable-field-trial-config')
+            chrome_options.add_argument('--disable-ipc-flooding-protection')
             
             # 用户代理设置
             chrome_options.add_argument(f'--user-agent={HEADERS["User-Agent"]}')
