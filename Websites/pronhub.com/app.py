@@ -70,18 +70,51 @@ class PornhubScraper:
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
-            # 禁用不必要的功能以提高性能
+            # 针对中国大陆网络环境的优化
             chrome_options.add_argument('--disable-images')
             chrome_options.add_argument('--disable-javascript')
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--disable-features=VizDisplayCompositor')
             chrome_options.add_argument('--disable-logging')
-            chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-background-timer-throttling')
             chrome_options.add_argument('--disable-backgrounding-occluded-windows')
             chrome_options.add_argument('--disable-renderer-backgrounding')
             chrome_options.add_argument('--disable-field-trial-config')
             chrome_options.add_argument('--disable-ipc-flooding-protection')
+            
+            # 中国大陆网络优化
+            chrome_options.add_argument('--disable-default-apps')
+            chrome_options.add_argument('--disable-sync')
+            chrome_options.add_argument('--disable-translate')
+            chrome_options.add_argument('--disable-background-networking')
+            chrome_options.add_argument('--disable-component-update')
+            chrome_options.add_argument('--disable-client-side-phishing-detection')
+            chrome_options.add_argument('--disable-hang-monitor')
+            chrome_options.add_argument('--disable-prompt-on-repost')
+            chrome_options.add_argument('--disable-domain-reliability')
+            chrome_options.add_argument('--disable-features=TranslateUI')
+            chrome_options.add_argument('--disable-features=BlinkGenPropertyTrees')
+            chrome_options.add_argument('--disable-features=AudioServiceOutOfProcess')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+            chrome_options.add_argument('--disable-features=NetworkService')
+            chrome_options.add_argument('--disable-features=NetworkServiceLogging')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess')
+            chrome_options.add_argument('--disable-features=NetworkServiceSandbox')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess2')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess3')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess4')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess5')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess6')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess7')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess8')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess9')
+            chrome_options.add_argument('--disable-features=NetworkServiceInProcess10')
+            
+            # 内存优化
+            chrome_options.add_argument('--memory-pressure-off')
+            chrome_options.add_argument('--max_old_space_size=4096')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-software-rasterizer')
             
             # 用户代理设置
             chrome_options.add_argument(f'--user-agent={HEADERS["User-Agent"]}')
@@ -109,8 +142,22 @@ class PornhubScraper:
             else:
                 chrome_options.add_argument('--start-maximized')
             
-            # 自动下载并配置ChromeDriver
-            service = Service(ChromeDriverManager().install())
+            # 使用本地ChromeDriver（如果存在）
+            try:
+                # 首先尝试使用本地ChromeDriver
+                import os
+                local_chromedriver = os.path.join(os.getcwd(), 'chromedriver.exe')
+                if os.path.exists(local_chromedriver):
+                    print("✓ 使用本地ChromeDriver")
+                    service = Service(local_chromedriver)
+                else:
+                    # 如果本地没有，则自动下载
+                    print("正在下载ChromeDriver...")
+                    service = Service(ChromeDriverManager().install())
+            except Exception as e:
+                print(f"ChromeDriver下载失败: {e}")
+                print("尝试使用系统ChromeDriver...")
+                service = Service()
             
             # 创建WebDriver
             self.driver = webdriver.Chrome(service=service, options=chrome_options)

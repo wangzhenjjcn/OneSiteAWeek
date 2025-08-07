@@ -69,6 +69,8 @@ SELENIUM_CONFIG = {
     'page_load_timeout': 15,  # 页面加载超时时间（减少到15秒）
     'implicit_wait': 5,   # 隐式等待时间（减少到5秒）
     'explicit_wait': 5,   # 显式等待时间（减少到5秒）
+    'use_local_chromedriver': True,  # 是否优先使用本地ChromeDriver
+    'enable_china_optimization': True,  # 是否启用中国大陆网络优化
 }
 
 # 调试设置
