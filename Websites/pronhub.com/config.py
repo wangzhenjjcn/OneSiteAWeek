@@ -66,11 +66,16 @@ SELENIUM_CONFIG = {
     'disable_images': True,  # 是否禁用图片加载
     'disable_javascript': True,  # 是否禁用JavaScript（改为True以提高性能）
     'window_size': '1920,1080',  # 窗口大小
-    'page_load_timeout': 15,  # 页面加载超时时间（减少到15秒）
-    'implicit_wait': 5,   # 隐式等待时间（减少到5秒）
-    'explicit_wait': 5,   # 显式等待时间（减少到5秒）
+    'page_load_timeout': 10,  # 页面加载超时时间（减少到10秒）
+    'implicit_wait': 3,   # 隐式等待时间（减少到3秒）
+    'explicit_wait': 8,   # 显式等待时间（增加到8秒，但允许超时后继续）
     'use_local_chromedriver': True,  # 是否优先使用本地ChromeDriver
     'enable_china_optimization': True,  # 是否启用中国大陆网络优化
+    'enable_ad_monitor': True,  # 是否启用广告监控
+    'ad_monitor_interval': 5,  # 广告监控间隔（秒）
+    'ignore_ssl_errors': True,  # 是否忽略SSL错误
+    'ignore_cross_origin': True,  # 是否忽略跨域拦截
+    'fast_mode': True,  # 快速模式，减少等待时间
 }
 
 # 调试设置

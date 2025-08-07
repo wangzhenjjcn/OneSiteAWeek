@@ -41,10 +41,14 @@ class PornhubScraper:
             self.use_selenium = use_selenium
         
         self.driver = None
+        self.ad_monitor_thread = None
+        self.stop_ad_monitor = False
         
         # 如果使用Selenium，初始化浏览器
         if self.use_selenium:
             self.init_selenium_driver()
+            # 启动广告监控线程
+            self.start_ad_monitor()
     
     def init_selenium_driver(self):
         """初始化Selenium WebDriver"""
@@ -70,11 +74,19 @@ class PornhubScraper:
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
+            # SSL和跨域优化
+            chrome_options.add_argument('--ignore-ssl-errors')
+            chrome_options.add_argument('--ignore-certificate-errors')
+            chrome_options.add_argument('--ignore-certificate-errors-spki-list')
+            chrome_options.add_argument('--ignore-ssl-errors-spki-list')
+            chrome_options.add_argument('--allow-running-insecure-content')
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--allow-cross-origin-auth-prompt')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+            
             # 针对中国大陆网络环境的优化
             chrome_options.add_argument('--disable-images')
             chrome_options.add_argument('--disable-javascript')
-            chrome_options.add_argument('--disable-web-security')
-            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
             chrome_options.add_argument('--disable-logging')
             chrome_options.add_argument('--disable-background-timer-throttling')
             chrome_options.add_argument('--disable-backgrounding-occluded-windows')
@@ -95,7 +107,6 @@ class PornhubScraper:
             chrome_options.add_argument('--disable-features=TranslateUI')
             chrome_options.add_argument('--disable-features=BlinkGenPropertyTrees')
             chrome_options.add_argument('--disable-features=AudioServiceOutOfProcess')
-            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
             chrome_options.add_argument('--disable-features=NetworkService')
             chrome_options.add_argument('--disable-features=NetworkServiceLogging')
             chrome_options.add_argument('--disable-features=NetworkServiceInProcess')
@@ -113,7 +124,6 @@ class PornhubScraper:
             # 内存优化
             chrome_options.add_argument('--memory-pressure-off')
             chrome_options.add_argument('--max_old_space_size=4096')
-            chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-software-rasterizer')
             
             # 用户代理设置
@@ -151,23 +161,23 @@ class PornhubScraper:
                     print("✓ 使用本地ChromeDriver")
                     service = Service(local_chromedriver)
                 else:
-                    # 如果本地没有，则自动下载
-                    print("正在下载ChromeDriver...")
-                    service = Service(ChromeDriverManager().install())
+                    # 如果本地没有，则使用系统ChromeDriver
+                    print("使用系统ChromeDriver...")
+                    service = Service()
             except Exception as e:
-                print(f"ChromeDriver下载失败: {e}")
-                print("尝试使用系统ChromeDriver...")
+                print(f"ChromeDriver初始化失败: {e}")
+                print("尝试使用默认ChromeDriver...")
                 service = Service()
             
             # 创建WebDriver
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             
             # 设置页面加载超时
-            page_load_timeout = SELENIUM_CONFIG.get('page_load_timeout', 15)
+            page_load_timeout = SELENIUM_CONFIG.get('page_load_timeout', 10)
             self.driver.set_page_load_timeout(page_load_timeout)
             
             # 设置隐式等待时间
-            implicit_wait = SELENIUM_CONFIG.get('implicit_wait', 5)
+            implicit_wait = SELENIUM_CONFIG.get('implicit_wait', 3)
             self.driver.implicitly_wait(implicit_wait)
             
             # 执行反检测脚本
@@ -212,8 +222,49 @@ class PornhubScraper:
         
         return False
     
+    def start_ad_monitor(self):
+        """启动广告监控线程"""
+        if not self.use_selenium or not self.driver:
+            return
+        
+        try:
+            self.stop_ad_monitor = False
+            self.ad_monitor_thread = threading.Thread(target=self.ad_monitor_worker, daemon=True)
+            self.ad_monitor_thread.start()
+            if DEBUG['verbose']:
+                print("✓ 广告监控线程已启动")
+        except Exception as e:
+            print(f"启动广告监控线程失败: {e}")
+    
+    def stop_ad_monitor_thread(self):
+        """停止广告监控线程"""
+        if self.ad_monitor_thread:
+            self.stop_ad_monitor = True
+            self.ad_monitor_thread.join(timeout=5)
+            if DEBUG['verbose']:
+                print("✓ 广告监控线程已停止")
+    
+    def ad_monitor_worker(self):
+        """广告监控工作线程"""
+        while not self.stop_ad_monitor:
+            try:
+                if self.driver:
+                    # 检查并关闭广告标签页
+                    self.close_ad_tabs()
+                
+                # 每5秒检查一次
+                time.sleep(5)
+                
+            except Exception as e:
+                if DEBUG['verbose']:
+                    print(f"广告监控线程出错: {e}")
+                time.sleep(5)
+    
     def close_driver(self):
         """关闭WebDriver"""
+        # 停止广告监控线程
+        self.stop_ad_monitor_thread()
+        
         if self.driver:
             try:
                 self.driver.quit()
@@ -221,43 +272,131 @@ class PornhubScraper:
             except Exception as e:
                 print(f"关闭WebDriver时出错: {e}")
             finally:
-                                self.driver = None
+                self.driver = None
+    
+    def close_ad_tabs(self):
+        """关闭广告标签页"""
+        try:
+            if not self.driver:
+                return
+            
+            # 获取所有标签页
+            all_handles = self.driver.window_handles
+            if len(all_handles) <= 1:
+                return
+            
+            # 记录主标签页（第一个标签页）
+            main_handle = all_handles[0]
+            
+            # 检查其他标签页
+            for handle in all_handles[1:]:
+                try:
+                    # 切换到标签页
+                    self.driver.switch_to.window(handle)
+                    
+                    # 获取当前URL
+                    current_url = self.driver.current_url
+                    
+                    # 检查是否为广告页面（非pornhub.com域名）
+                    if not self.is_valid_pornhub_url(current_url):
+                        if DEBUG['verbose']:
+                            print(f"关闭广告标签页: {current_url}")
+                        
+                        # 关闭标签页
+                        self.driver.close()
+                        
+                        # 切换回主标签页
+                        self.driver.switch_to.window(main_handle)
+                        
+                except Exception as e:
+                    if DEBUG['verbose']:
+                        print(f"关闭广告标签页时出错: {e}")
+                    # 确保切换回主标签页
+                    try:
+                        self.driver.switch_to.window(main_handle)
+                    except:
+                        pass
+                        
+        except Exception as e:
+            if DEBUG['verbose']:
+                print(f"处理广告标签页时出错: {e}")
+    
+    def is_valid_pornhub_url(self, url):
+        """检查是否为有效的Pornhub URL"""
+        try:
+            from urllib.parse import urlparse
+            
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.lower()
+            
+            # 有效的Pornhub域名
+            valid_domains = [
+                'pornhub.com',
+                'www.pornhub.com',
+                'cn.pornhub.com',
+                'www.cn.pornhub.com',
+                'jp.pornhub.com',
+                'www.jp.pornhub.com',
+                'phncdn.com',  # Pornhub CDN
+                'www.phncdn.com'
+            ]
+            
+            # 检查是否为有效域名
+            for valid_domain in valid_domains:
+                if domain == valid_domain or domain.endswith('.' + valid_domain):
+                    return True
+            
+            # 检查是否为localhost或127.0.0.1（本地测试）
+            if domain in ['localhost', '127.0.0.1']:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            if DEBUG['verbose']:
+                print(f"URL验证出错: {e}")
+            return False
     
     def handle_age_verification(self):
         """处理年龄验证弹窗"""
         try:
-            # 等待年龄验证按钮出现
+            # 根据实际HTML结构更新选择器
             age_button_selectors = [
                 "button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton",
+                "button.gtm-event-age-verification",
+                "button.js-closeAgeModal",
+                "button.buttonOver18",
+                "button.orangeButton",
                 "button[data-event='age_verification']",
                 "button[data-label='over18_enter']",
                 ".orangeButton",
                 "button:contains('我年满 18 岁')",
-                "button:contains('18')"
+                "button:contains('18')",
+                "button:contains('输入')"
             ]
             
-            # 首先尝试通过文本内容查找按钮
+            # 首先尝试通过文本内容查找按钮（减少等待时间）
             try:
-                # 等待页面完全加载
-                time.sleep(3)
+                # 等待页面完全加载（减少等待时间）
+                time.sleep(1)  # 从3秒减少到1秒
                 
                 # 尝试通过文本内容查找按钮
                 buttons = self.driver.find_elements(By.TAG_NAME, "button")
                 for button in buttons:
                     try:
                         button_text = button.text.strip()
-                        if any(keyword in button_text for keyword in ['18', '我年满', '满十八']):
+                        if any(keyword in button_text for keyword in ['18', '我年满', '满十八', '输入']):
                             if button.is_displayed() and button.is_enabled():
                                 if DEBUG['verbose']:
                                     print(f"找到年龄验证按钮: {button_text}")
                                 
                                 # 滚动到按钮位置
                                 self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                                time.sleep(1)
+                                time.sleep(0.5)  # 减少等待时间
                                 
                                 # 点击按钮
                                 button.click()
-                                time.sleep(2)
+                                time.sleep(1)  # 减少等待时间
                                 
                                 if DEBUG['verbose']:
                                     print("✓ 年龄验证完成")
@@ -272,27 +411,27 @@ class PornhubScraper:
                 if DEBUG['verbose']:
                     print(f"通过文本查找按钮失败: {e}")
             
-            # 如果文本查找失败，尝试CSS选择器
+            # 如果文本查找失败，尝试CSS选择器（减少等待时间）
             for selector in age_button_selectors:
                 try:
-                    # 尝试查找年龄验证按钮
-                    age_button = WebDriverWait(self.driver, 3).until(
+                    # 尝试查找年龄验证按钮（减少等待时间）
+                    age_button = WebDriverWait(self.driver, 2).until(  # 从3秒减少到2秒
                         EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                     )
                     
                     if age_button and age_button.is_displayed():
                         if DEBUG['verbose']:
-                            print("发现年龄验证按钮，正在点击...")
+                            print(f"发现年龄验证按钮，正在点击... (选择器: {selector})")
                         
                         # 滚动到按钮位置
                         self.driver.execute_script("arguments[0].scrollIntoView(true);", age_button)
-                        time.sleep(1)
+                        time.sleep(0.5)  # 减少等待时间
                         
                         # 点击按钮
                         age_button.click()
                         
-                        # 等待页面更新
-                        time.sleep(2)
+                        # 等待页面更新（减少等待时间）
+                        time.sleep(1)  # 从2秒减少到1秒
                         
                         if DEBUG['verbose']:
                             print("✓ 年龄验证完成")
@@ -309,11 +448,15 @@ class PornhubScraper:
             # 如果没有找到按钮，尝试通过JavaScript点击
             try:
                 js_click_scripts = [
+                    "document.querySelector('button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton').click();",
                     "document.querySelector('button.gtm-event-age-verification').click();",
+                    "document.querySelector('button.js-closeAgeModal').click();",
+                    "document.querySelector('button.buttonOver18').click();",
+                    "document.querySelector('button.orangeButton').click();",
                     "document.querySelector('button[data-event=\"age_verification\"]').click();",
                     "document.querySelector('button[data-label=\"over18_enter\"]').click();",
-                    "document.querySelector('.orangeButton').click();",
-                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('18')).click();"
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('18')).click();",
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('输入')).click();"
                 ]
                 
                 for script in js_click_scripts:
@@ -321,7 +464,7 @@ class PornhubScraper:
                         self.driver.execute_script(script)
                         if DEBUG['verbose']:
                             print("✓ 通过JavaScript完成年龄验证")
-                        time.sleep(2)
+                        time.sleep(1)  # 减少等待时间
                         return True
                     except Exception:
                         continue
@@ -341,6 +484,101 @@ class PornhubScraper:
                 print(f"处理年龄验证时出错: {e}")
             return False
     
+    def handle_age_verification_immediate(self):
+        """立即处理年龄验证弹窗（不等待页面完全加载）"""
+        try:
+            print("立即检查年龄验证按钮...")
+            
+            # 根据实际HTML结构更新选择器
+            age_button_selectors = [
+                "button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton",
+                "button.gtm-event-age-verification",
+                "button.js-closeAgeModal",
+                "button.buttonOver18",
+                "button.orangeButton",
+                "button[data-event='age_verification']",
+                "button[data-label='over18_enter']",
+                ".orangeButton",
+                "button:contains('我年满 18 岁')",
+                "button:contains('18')",
+                "button:contains('输入')"
+            ]
+            
+            # 立即尝试通过文本内容查找按钮
+            try:
+                # 不等待，立即查找
+                buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                for button in buttons:
+                    try:
+                        button_text = button.text.strip()
+                        if any(keyword in button_text for keyword in ['18', '我年满', '满十八', '输入']):
+                            if button.is_displayed() and button.is_enabled():
+                                print(f"立即找到年龄验证按钮: {button_text}")
+                                
+                                # 立即点击按钮
+                                button.click()
+                                time.sleep(0.5)  # 短暂等待
+                                
+                                print("✓ 立即完成年龄验证")
+                                return True
+                    except Exception as e:
+                        continue
+                        
+            except Exception as e:
+                print(f"立即查找按钮失败: {e}")
+            
+            # 立即尝试CSS选择器
+            for selector in age_button_selectors:
+                try:
+                    # 立即查找，不等待
+                    age_buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for age_button in age_buttons:
+                        if age_button.is_displayed() and age_button.is_enabled():
+                            print(f"立即发现年龄验证按钮，正在点击... (选择器: {selector})")
+                            
+                            # 立即点击按钮
+                            age_button.click()
+                            time.sleep(0.5)  # 短暂等待
+                            
+                            print("✓ 立即完成年龄验证")
+                            return True
+                            
+                except Exception as e:
+                    continue
+            
+            # 立即尝试JavaScript点击
+            try:
+                js_click_scripts = [
+                    "document.querySelector('button.gtm-event-age-verification.js-closeAgeModal.buttonOver18.orangeButton').click();",
+                    "document.querySelector('button.gtm-event-age-verification').click();",
+                    "document.querySelector('button.js-closeAgeModal').click();",
+                    "document.querySelector('button.buttonOver18').click();",
+                    "document.querySelector('button.orangeButton').click();",
+                    "document.querySelector('button[data-event=\"age_verification\"]').click();",
+                    "document.querySelector('button[data-label=\"over18_enter\"]').click();",
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('18')).click();",
+                    "Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.includes('输入')).click();"
+                ]
+                
+                for script in js_click_scripts:
+                    try:
+                        self.driver.execute_script(script)
+                        print("✓ 立即通过JavaScript完成年龄验证")
+                        time.sleep(0.5)  # 短暂等待
+                        return True
+                    except Exception:
+                        continue
+                        
+            except Exception as e:
+                print(f"立即JavaScript点击失败: {e}")
+            
+            print("立即检查未发现年龄验证按钮")
+            return False
+            
+        except Exception as e:
+            print(f"立即处理年龄验证时出错: {e}")
+            return False
+    
     def get_page(self, url):
         """获取页面内容"""
         # 如果使用Selenium且driver可用
@@ -351,47 +589,98 @@ class PornhubScraper:
     
     def get_page_selenium(self, url):
         """使用Selenium获取页面内容"""
-        max_retries = SCRAPER_CONFIG.get('max_retries', 3)
+        max_retries = SCRAPER_CONFIG.get('max_retries', 5)  # 增加重试次数
         
         for attempt in range(max_retries):
             try:
                 if DEBUG['verbose']:
-                    print(f"Selenium访问: {url}")
+                    print(f"Selenium访问: {url} (尝试 {attempt + 1}/{max_retries})")
                 
                 # 访问页面
                 self.driver.get(url)
                 
-                # 等待页面加载完成
-                explicit_wait = SELENIUM_CONFIG.get('explicit_wait', 10)
-                WebDriverWait(self.driver, explicit_wait).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
+                # 等待页面基本加载
+                time.sleep(2)
                 
-                # 处理年龄验证弹窗
-                self.handle_age_verification()
+                # 检查页面类型
+                page_source = self.driver.page_source
+                page_type = self.check_page_type(page_source)
                 
-                # 获取页面源码
+                # 根据页面类型进行处理
+                if page_type == "region_restricted":
+                    print("检测到地区限制页面，尝试绕过...")
+                    if self.handle_region_restriction():
+                        # 重新获取页面源码
+                        page_source = self.driver.page_source
+                        page_type = self.check_page_type(page_source)
+                    else:
+                        print("无法绕过地区限制，尝试使用代理...")
+                        # 这里可以添加代理切换逻辑
+                        if attempt < max_retries - 1:
+                            time.sleep(3)
+                        continue
+                
+                # 处理年龄验证页面
+                if page_type == "age_verification":
+                    print("检测到年龄验证页面，立即处理...")
+                    if not SELENIUM_CONFIG.get('fast_mode', False):
+                        self.handle_age_verification_immediate()
+                        # 再次检查页面类型
+                        page_source = self.driver.page_source
+                        page_type = self.check_page_type(page_source)
+                
+                # 等待页面基本加载完成（减少等待时间）
+                explicit_wait = SELENIUM_CONFIG.get('explicit_wait', 8)  # 减少到8秒
+                try:
+                    WebDriverWait(self.driver, explicit_wait).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                except TimeoutException:
+                    # 如果超时，尝试获取当前页面源码
+                    if DEBUG['verbose']:
+                        print("页面加载超时，尝试获取当前内容...")
+                
+                # 再次处理年龄验证（以防第一次没找到）
+                if not SELENIUM_CONFIG.get('fast_mode', False) and page_type == "age_verification":
+                    self.handle_age_verification()
+                
+                # 关闭广告标签页
+                self.close_ad_tabs()
+                
+                # 获取最终页面源码
                 page_source = self.driver.page_source
                 
-                if DEBUG['verbose']:
-                    print(f"✓ Selenium成功获取页面: {len(page_source)} 字符")
-                
-                return page_source
+                # 检查页面内容是否有效
+                if page_source and len(page_source) > 1000:  # 确保页面内容足够
+                    if DEBUG['verbose']:
+                        print(f"✓ Selenium成功获取页面: {len(page_source)} 字符")
+                    return page_source
+                else:
+                    print(f"页面内容无效或过短: {len(page_source) if page_source else 0} 字符")
+                    if attempt < max_retries - 1:
+                        time.sleep(3)
+                    continue
                 
             except TimeoutException as e:
                 print(f"Selenium页面加载超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+                # 关闭可能的广告标签页
+                self.close_ad_tabs()
                 if attempt < max_retries - 1:
                     time.sleep(3)
                 continue
                 
             except WebDriverException as e:
                 print(f"Selenium错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                # 关闭可能的广告标签页
+                self.close_ad_tabs()
                 if attempt < max_retries - 1:
                     time.sleep(5)
                 continue
                 
             except Exception as e:
                 print(f"Selenium获取页面失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                # 关闭可能的广告标签页
+                self.close_ad_tabs()
                 if attempt < max_retries - 1:
                     time.sleep(2)
                 continue
@@ -1518,6 +1807,111 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             
             # 关闭WebDriver
             self.close_driver()
+
+    def check_page_type(self, page_source):
+        """检查页面类型"""
+        try:
+            # 检查是否为地区限制页面
+            region_restriction_indicators = [
+                "Virginia",
+                "elected officials",
+                "verify your age",
+                "ID card",
+                "device-based verification",
+                "completely disable access",
+                "contact your representatives"
+            ]
+            
+            # 检查是否为年龄验证页面
+            age_verification_indicators = [
+                "我年满 18 岁",
+                "这是个成人网站",
+                "ageDisclaimer",
+                "modalWrapMTubes",
+                "gtm-event-age-verification"
+            ]
+            
+            # 检查是否为正常内容页面
+            normal_content_indicators = [
+                "videoCategory",
+                "pcVideoListItem",
+                "Pornhub",
+                "视频"
+            ]
+            
+            page_source_lower = page_source.lower()
+            
+            # 检查地区限制
+            for indicator in region_restriction_indicators:
+                if indicator.lower() in page_source_lower:
+                    print(f"⚠️  检测到地区限制页面: {indicator}")
+                    return "region_restricted"
+            
+            # 检查年龄验证
+            for indicator in age_verification_indicators:
+                if indicator in page_source:
+                    print(f"✓ 检测到年龄验证页面: {indicator}")
+                    return "age_verification"
+            
+            # 检查正常内容
+            for indicator in normal_content_indicators:
+                if indicator in page_source:
+                    print(f"✓ 检测到正常内容页面: {indicator}")
+                    return "normal_content"
+            
+            print("⚠️  未知页面类型")
+            return "unknown"
+            
+        except Exception as e:
+            print(f"页面类型检测出错: {e}")
+            return "unknown"
+    
+    def handle_region_restriction(self):
+        """处理地区限制"""
+        try:
+            print("检测到地区限制，尝试绕过...")
+            
+            # 尝试使用不同的User-Agent
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ]
+            
+            for i, user_agent in enumerate(user_agents, 1):
+                try:
+                    print(f"尝试User-Agent {i}: {user_agent[:50]}...")
+                    
+                    # 更新User-Agent
+                    self.driver.execute_script(f"Object.defineProperty(navigator, 'userAgent', {{get: () => '{user_agent}'}})")
+                    
+                    # 刷新页面
+                    self.driver.refresh()
+                    time.sleep(3)
+                    
+                    # 检查页面类型
+                    page_source = self.driver.page_source
+                    page_type = self.check_page_type(page_source)
+                    
+                    if page_type == "age_verification":
+                        print("✓ 成功绕过地区限制，进入年龄验证页面")
+                        return True
+                    elif page_type == "normal_content":
+                        print("✓ 成功绕过地区限制，直接进入正常页面")
+                        return True
+                    else:
+                        print(f"User-Agent {i} 未能绕过地区限制")
+                        
+                except Exception as e:
+                    print(f"User-Agent {i} 尝试失败: {e}")
+                    continue
+            
+            print("✗ 所有User-Agent都无法绕过地区限制")
+            return False
+            
+        except Exception as e:
+            print(f"处理地区限制时出错: {e}")
+            return False
 
 if __name__ == "__main__":
     scraper = PornhubScraper()

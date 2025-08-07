@@ -63,39 +63,52 @@ def download_chromedriver(version=None):
             print(f"不支持的操作系统: {platform.system()}")
             return False
         
-        # 构建下载URL
-        base_url = "https://chromedriver.storage.googleapis.com"
-        download_url = f"{base_url}/{version}.0.6045.105/chromedriver_{platform_name}.zip"
+        # 使用国内镜像源（避免谷歌链接）
+        mirror_urls = [
+            f"https://npm.taobao.org/mirrors/chromedriver/{version}.0.6045.105/chromedriver_{platform_name}.zip",
+            f"https://cdn.npmmirror.com/binaries/chromedriver/{version}.0.6045.105/chromedriver_{platform_name}.zip",
+            f"https://registry.npmmirror.com/-/binary/chromedriver/{version}.0.6045.105/chromedriver_{platform_name}.zip"
+        ]
         
-        print(f"下载URL: {download_url}")
+        # 尝试不同的镜像源
+        for i, download_url in enumerate(mirror_urls, 1):
+            try:
+                print(f"尝试镜像源 {i}: {download_url}")
+                
+                # 下载文件
+                print("正在下载ChromeDriver...")
+                response = requests.get(download_url, timeout=30, verify=False)
+                
+                if response.status_code == 200:
+                    # 保存文件
+                    zip_path = "chromedriver.zip"
+                    with open(zip_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    # 解压文件
+                    print("正在解压ChromeDriver...")
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        zip_ref.extractall('.')
+                    
+                    # 删除zip文件
+                    os.remove(zip_path)
+                    
+                    # 设置执行权限（Linux/macOS）
+                    if platform.system() != "Windows":
+                        os.chmod("chromedriver", 0o755)
+                    
+                    print("✓ ChromeDriver下载完成")
+                    return True
+                else:
+                    print(f"镜像源 {i} 下载失败，状态码: {response.status_code}")
+                    continue
+                    
+            except Exception as e:
+                print(f"镜像源 {i} 下载出错: {e}")
+                continue
         
-        # 下载文件
-        print("正在下载ChromeDriver...")
-        response = requests.get(download_url, timeout=30)
-        
-        if response.status_code == 200:
-            # 保存文件
-            zip_path = "chromedriver.zip"
-            with open(zip_path, 'wb') as f:
-                f.write(response.content)
-            
-            # 解压文件
-            print("正在解压ChromeDriver...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall('.')
-            
-            # 删除zip文件
-            os.remove(zip_path)
-            
-            # 设置执行权限（Linux/macOS）
-            if platform.system() != "Windows":
-                os.chmod("chromedriver", 0o755)
-            
-            print("✓ ChromeDriver下载完成")
-            return True
-        else:
-            print(f"下载失败，状态码: {response.status_code}")
-            return False
+        print("所有镜像源都下载失败")
+        return False
             
     except Exception as e:
         print(f"下载ChromeDriver时出错: {e}")
