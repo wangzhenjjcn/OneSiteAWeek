@@ -62,7 +62,7 @@ FILE_EXTENSIONS = {
 # Selenium设置
 SELENIUM_CONFIG = {
     'use_selenium': True,  # 是否使用Selenium
-    'headless': False,     # 是否无头模式（不显示浏览器窗口）
+    'headless': True,     # 是否无头模式（不显示浏览器窗口）
     'disable_images': True,  # 是否禁用图片加载
     'disable_javascript': True,  # 是否禁用JavaScript（改为True以提高性能）
     'window_size': '1920,1080',  # 窗口大小
@@ -76,6 +76,13 @@ SELENIUM_CONFIG = {
     'ignore_ssl_errors': True,  # 是否忽略SSL错误
     'ignore_cross_origin': True,  # 是否忽略跨域拦截
     'fast_mode': False,  # 快速模式，减少等待时间
+}
+
+# 详情页面获取方式设置
+DETAIL_PAGE_CONFIG = {
+    'use_requests': True,  # True: 使用requests方式（更稳定）, False: 使用Selenium多标签页方式（更快但不稳定）
+    'max_workers_requests': 10,  # requests方式的最大线程数
+    'max_workers_selenium': 3,   # selenium方式的最大线程数（减少以提高稳定性）
 }
 
 # 调试设置

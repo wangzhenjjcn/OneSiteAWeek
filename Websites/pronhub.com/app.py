@@ -9,7 +9,7 @@ import random
 import threading
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import PROXY_CONFIG, HEADERS, BASE_URL, SCRAPER_CONFIG, OUTPUT_CONFIG, DEBUG, SSL_CONFIG, SELENIUM_CONFIG
+from config import PROXY_CONFIG, HEADERS, BASE_URL, SCRAPER_CONFIG, OUTPUT_CONFIG, DEBUG, SSL_CONFIG, SELENIUM_CONFIG, DETAIL_PAGE_CONFIG
 
 # Selenium相关导入
 from selenium import webdriver
@@ -1885,7 +1885,840 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         except Exception as e:
             print(f"处理地区限制时出错: {e}")
             return False
+    
+    def fast_scrape_all_pages(self, start_page=1):
+        """快速轮询所有页面直到分页结束"""
+        print("开始快速轮询所有页面...")
+        
+        all_video_urls = []
+        current_page = start_page
+        max_pages = 100  # 最大页数限制，防止无限循环
+        is_first_page = True  # 标记是否为第一个页面
+        
+        while current_page <= max_pages:
+            try:
+                print(f"正在快速获取第 {current_page} 页...")
+                
+                # 构建页面URL
+                page_url = f"{self.base_url}?page={current_page}"
+                
+                # 快速获取页面内容（带超时控制）
+                page_source = self.get_page_with_timeout_control(page_url, is_first_page)
+                
+                if not page_source:
+                    print(f"第 {current_page} 页获取失败，跳过此页")
+                    current_page += 1
+                    continue
+                
+                # 快速解析视频链接（不获取详细信息）
+                video_urls = self.fast_parse_video_urls(page_source)
+                
+                if not video_urls:
+                    print(f"第 {current_page} 页没有找到视频链接，可能已到最后一页")
+                    break
+                
+                print(f"第 {current_page} 页找到 {len(video_urls)} 个视频链接")
+                all_video_urls.extend(video_urls)
+                
+                # 检查是否为最后一页
+                if self.check_is_last_page(page_source):
+                    print(f"检测到第 {current_page} 页为最后一页")
+                    break
+                
+                current_page += 1
+                is_first_page = False  # 第一个页面处理完毕
+                
+                # 短暂延迟，避免请求过快
+                time.sleep(0.5)
+                
+            except Exception as e:
+                print(f"处理第 {current_page} 页时出错: {e}")
+                current_page += 1
+                continue
+        
+        print(f"轮询完成，总共找到 {len(all_video_urls)} 个视频链接")
+        return all_video_urls
+    
+    def get_page_with_timeout_control(self, url, is_first_page=False):
+        """带超时控制的分页获取"""
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                if DEBUG['verbose']:
+                    print(f"访问页面: {url} (尝试 {attempt + 1}/{max_retries})")
+                
+                # 访问页面，最多等待5秒
+                self.driver.set_page_load_timeout(5)
+                self.driver.get(url)
+                
+                # 等待页面基本加载
+                time.sleep(1)
+                
+                # 检查页面是否已经打开
+                page_source = self.driver.page_source
+                if page_source and len(page_source) > 1000:
+                    print("✓ 页面已成功打开")
+                    
+                    # 只有第一个页面需要验证18岁
+                    if is_first_page:
+                        print("检测到第一个页面，进行年龄验证...")
+                        if not SELENIUM_CONFIG.get('fast_mode', False):
+                            age_verification_result = self.handle_age_verification()
+                            if age_verification_result:
+                                print("✓ 年龄验证成功")
+                                # 重新获取页面源码
+                                page_source = self.driver.page_source
+                            else:
+                                print("⚠️  年龄验证失败")
+                    
+                    return page_source
+                else:
+                    print(f"页面内容无效，长度: {len(page_source) if page_source else 0}")
+                    
+                    if attempt == 0:
+                        # 第一次尝试失败，刷新页面等待10秒
+                        print("刷新页面，等待10秒...")
+                        self.driver.refresh()
+                        time.sleep(10)
+                    elif attempt == 1:
+                        # 第二次尝试失败，等待15秒
+                        print("等待15秒...")
+                        time.sleep(15)
+                    else:
+                        # 第三次尝试失败，放弃此页
+                        print("页面加载失败，放弃此页")
+                        return None
+                    
+                    continue
+                    
+            except TimeoutException as e:
+                print(f"页面加载超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt == 0:
+                    # 第一次超时，刷新页面等待10秒
+                    print("页面超时，刷新页面等待10秒...")
+                    try:
+                        self.driver.refresh()
+                        time.sleep(10)
+                    except:
+                        pass
+                elif attempt == 1:
+                    # 第二次超时，等待15秒
+                    print("页面超时，等待15秒...")
+                    time.sleep(15)
+                else:
+                    # 第三次超时，放弃此页
+                    print("页面多次超时，放弃此页")
+                    return None
+                continue
+                
+            except WebDriverException as e:
+                print(f"WebDriver错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt == 0:
+                    # 第一次错误，刷新页面等待10秒
+                    print("WebDriver错误，刷新页面等待10秒...")
+                    try:
+                        self.driver.refresh()
+                        time.sleep(10)
+                    except:
+                        pass
+                elif attempt == 1:
+                    # 第二次错误，等待15秒
+                    print("WebDriver错误，等待15秒...")
+                    time.sleep(15)
+                else:
+                    # 第三次错误，放弃此页
+                    print("WebDriver多次错误，放弃此页")
+                    return None
+                continue
+                
+            except Exception as e:
+                print(f"获取页面失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt == 0:
+                    # 第一次错误，刷新页面等待10秒
+                    print("获取页面失败，刷新页面等待10秒...")
+                    try:
+                        self.driver.refresh()
+                        time.sleep(10)
+                    except:
+                        pass
+                elif attempt == 1:
+                    # 第二次错误，等待15秒
+                    print("获取页面失败，等待15秒...")
+                    time.sleep(15)
+                else:
+                    # 第三次错误，放弃此页
+                    print("获取页面多次失败，放弃此页")
+                    return None
+                continue
+        
+        print(f"所有重试都失败了: {url}")
+        return None
+    
+    def fast_parse_video_urls(self, html_content):
+        """快速解析视频链接（不获取详细信息）"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            video_list = soup.find('ul', {'id': 'videoCategory'})
+            
+            if not video_list:
+                return []
+            
+            video_urls = []
+            for li in video_list.find_all('li', class_='pcVideoListItem'):
+                try:
+                    # 获取视频链接
+                    link_element = li.find('a', class_='linkVideoThumb')
+                    if link_element:
+                        video_url = urljoin(self.base_url, link_element.get('href', ''))
+                        if video_url:
+                            video_urls.append(video_url)
+                except Exception as e:
+                    continue
+            
+            return video_urls
+            
+        except Exception as e:
+            print(f"快速解析视频链接失败: {e}")
+            return []
+    
+    def analyze_video_urls_parallel(self, video_urls, max_workers=10, use_requests=True):
+        """多线程分析视频URL，获取详细页面地址数据"""
+        print(f"开始多线程分析 {len(video_urls)} 个视频URL...")
+        
+        if use_requests:
+            # 使用requests方式（推荐）
+            return self.analyze_video_urls_with_requests(video_urls, max_workers)
+        else:
+            # 使用Selenium多标签页方式
+            return self.analyze_video_urls_with_selenium_tabs(video_urls, max_workers)
+    
+    def analyze_video_urls_with_requests(self, video_urls, max_workers=10):
+        """使用requests多线程分析视频URL"""
+        print("使用requests方式分析视频URL...")
+        
+        # 创建线程池
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_url = {executor.submit(self.analyze_single_video_url_with_requests, url): url for url in video_urls}
+            
+            # 收集结果
+            analyzed_data = []
+            completed = 0
+            
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    result = future.result()
+                    if result:
+                        analyzed_data.append(result)
+                    completed += 1
+                    
+                    if completed % 10 == 0:
+                        print(f"已分析 {completed}/{len(video_urls)} 个视频URL")
+                        
+                except Exception as e:
+                    print(f"分析视频URL失败 {url}: {e}")
+                    completed += 1
+        
+        print(f"分析完成，成功分析 {len(analyzed_data)} 个视频")
+        return analyzed_data
+    
+    def analyze_single_video_url_with_requests(self, video_url):
+        """使用requests分析单个视频URL，同时进行下载"""
+        try:
+            # 使用requests获取视频页面内容
+            page_source = self.get_page_requests(video_url)
+            
+            if not page_source:
+                return None
+            
+            # 解析视频详细信息
+            soup = BeautifulSoup(page_source, 'html.parser')
+            
+            # 提取基本信息
+            video_data = {
+                'url': video_url,
+                'video_url': video_url,  # 添加video_url字段
+                'title': '',
+                'viewkey': '',
+                'video_id': '',
+                'thumbnail_url': '',
+                'preview_url': '',
+                'duration': '',
+                'uploader': '',
+                'views': '',
+                'publish_time': '',
+                'categories': [],
+                'm3u8_urls': [],
+                'best_m3u8_url': '',
+                'alt_text': ''  # 添加alt_text字段
+            }
+            
+            # 提取标题
+            title_element = soup.find('h1', class_='title')
+            if title_element:
+                video_data['title'] = title_element.get_text(strip=True)
+            
+            # 提取viewkey
+            viewkey_match = re.search(r'viewkey=([^&]+)', video_url)
+            if viewkey_match:
+                video_data['viewkey'] = viewkey_match.group(1)
+            
+            # 提取缩略图
+            img_element = soup.find('img', class_='videoThumb')
+            if img_element:
+                video_data['thumbnail_url'] = img_element.get('src', '')
+            
+            # 提取预览视频
+            video_element = soup.find('video')
+            if video_element:
+                video_data['preview_url'] = video_element.get('src', '')
+            
+            # 提取时长
+            duration_element = soup.find('span', class_='duration')
+            if duration_element:
+                video_data['duration'] = duration_element.get_text(strip=True)
+            
+            # 提取上传者
+            uploader_element = soup.find('a', class_='username')
+            if uploader_element:
+                video_data['uploader'] = uploader_element.get_text(strip=True)
+            
+            # 提取观看次数
+            views_element = soup.find('span', class_='views')
+            if views_element:
+                video_data['views'] = views_element.get_text(strip=True)
+            
+            # 提取发布时间
+            publish_element = soup.find('span', class_='publishDate')
+            if publish_element:
+                video_data['publish_time'] = publish_element.get_text(strip=True)
+            
+            # 提取分类
+            categories = []
+            category_elements = soup.find_all('a', class_='category')
+            for cat in category_elements:
+                categories.append({
+                    'name': cat.get_text(strip=True),
+                    'url': cat.get('href', '')
+                })
+            video_data['categories'] = categories
+            
+            # 提取m3u8地址
+            m3u8_urls = []
+            scripts = soup.find_all('script')
+            for script in scripts:
+                script_content = script.string
+                if script_content:
+                    m3u8_patterns = [
+                        r'https?://[^"\']*\.m3u8[^"\']*',
+                        r'"videoUrl":"([^"]*\.m3u8[^"]*)"',
+                        r"'videoUrl':'([^']*\.m3u8[^']*)'",
+                    ]
+                    
+                    for pattern in m3u8_patterns:
+                        matches = re.findall(pattern, script_content, re.IGNORECASE)
+                        for match in matches:
+                            if isinstance(match, tuple):
+                                match = match[0]
+                            if match and match not in m3u8_urls:
+                                clean_url = match.replace('\\/', '/')
+                                m3u8_urls.append(clean_url)
+            
+            video_data['m3u8_urls'] = m3u8_urls
+            
+            # 选择最佳m3u8地址
+            if m3u8_urls:
+                priority_order = ['1080P', '720P', '480P', '240P']
+                for priority in priority_order:
+                    for url in m3u8_urls:
+                        if priority in url:
+                            video_data['best_m3u8_url'] = url
+                            break
+                    if video_data['best_m3u8_url']:
+                        break
+                
+                if not video_data['best_m3u8_url'] and m3u8_urls:
+                    video_data['best_m3u8_url'] = m3u8_urls[0]
+            
+            # 在分析的同时进行下载
+            if video_data.get('viewkey'):
+                self.download_video_data_immediately(video_data)
+            
+            return video_data
+            
+        except Exception as e:
+            print(f"分析视频URL失败 {video_url}: {e}")
+            return None
+    
+    def download_video_data_immediately(self, video_data):
+        """立即下载视频数据"""
+        try:
+            viewkey = video_data.get('viewkey', 'unknown')
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
+            os.makedirs(folder_path, exist_ok=True)
+            
+            # 创建HTML页面
+            html_path = self.create_html_page(video_data, folder_path)
+            
+            # 下载缩略图
+            if video_data.get('thumbnail_url'):
+                thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
+                try:
+                    success = self.download_file(video_data['thumbnail_url'], thumbnail_path)
+                    if success:
+                        print(f"✓ 缩略图下载成功: {viewkey}")
+                    else:
+                        print(f"✗ 缩略图下载失败: {viewkey}")
+                except Exception as e:
+                    print(f"缩略图下载出错 {viewkey}: {e}")
+            
+            # 下载预览视频
+            if video_data.get('preview_url'):
+                preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
+                try:
+                    success = self.download_file(video_data['preview_url'], preview_path)
+                    if success:
+                        print(f"✓ 预览视频下载成功: {viewkey}")
+                    else:
+                        print(f"✗ 预览视频下载失败: {viewkey}")
+                except Exception as e:
+                    print(f"预览视频下载出错 {viewkey}: {e}")
+            
+            # 创建采集日志
+            self.create_collection_log(video_data, folder_path, success=True)
+            
+        except Exception as e:
+            print(f"立即下载视频数据失败 {viewkey}: {e}")
+            # 创建失败日志
+            try:
+                self.create_collection_log(video_data, folder_path, success=False, error_msg=str(e))
+            except:
+                pass
+    
+    def analyze_single_video_url_with_tab(self, video_url):
+        """使用新标签页分析单个视频URL"""
+        try:
+            # 检查driver是否有效
+            if not self.driver:
+                print(f"Driver无效，跳过: {video_url}")
+                return None
+            
+            # 检查当前标签页数量
+            try:
+                handles = self.driver.window_handles
+                if len(handles) == 0:
+                    print(f"没有可用的标签页，跳过: {video_url}")
+                    return None
+            except Exception as e:
+                print(f"获取标签页句柄失败: {e}")
+                return None
+            
+            # 打开新标签页
+            try:
+                self.driver.execute_script("window.open('');")
+                time.sleep(0.5)  # 等待标签页打开
+            except Exception as e:
+                print(f"打开新标签页失败: {e}")
+                return None
+            
+            # 切换到新标签页
+            try:
+                new_handles = self.driver.window_handles
+                if len(new_handles) > len(handles):
+                    self.driver.switch_to.window(new_handles[-1])
+                else:
+                    print(f"新标签页打开失败，跳过: {video_url}")
+                    return None
+            except Exception as e:
+                print(f"切换到新标签页失败: {e}")
+                return None
+            
+            # 访问视频页面
+            try:
+                self.driver.get(video_url)
+                time.sleep(2)
+            except Exception as e:
+                print(f"访问页面失败 {video_url}: {e}")
+                # 关闭当前标签页并返回
+                try:
+                    if len(self.driver.window_handles) > 1:
+                        self.driver.close()
+                        self.driver.switch_to.window(self.driver.window_handles[0])
+                except:
+                    pass
+                return None
+            
+            # 获取页面源码
+            try:
+                page_source = self.driver.page_source
+                if not page_source or len(page_source) < 1000:
+                    print(f"页面内容无效 {video_url}")
+                    # 关闭当前标签页并返回
+                    try:
+                        if len(self.driver.window_handles) > 1:
+                            self.driver.close()
+                            self.driver.switch_to.window(self.driver.window_handles[0])
+                    except:
+                        pass
+                    return None
+            except Exception as e:
+                print(f"获取页面源码失败 {video_url}: {e}")
+                # 关闭当前标签页并返回
+                try:
+                    if len(self.driver.window_handles) > 1:
+                        self.driver.close()
+                        self.driver.switch_to.window(self.driver.window_handles[0])
+                except:
+                    pass
+                return None
+            
+            # 解析视频详细信息
+            soup = BeautifulSoup(page_source, 'html.parser')
+            
+            # 提取基本信息
+            video_data = {
+                'url': video_url,
+                'title': '',
+                'viewkey': '',
+                'video_id': '',
+                'thumbnail_url': '',
+                'preview_url': '',
+                'duration': '',
+                'uploader': '',
+                'views': '',
+                'publish_time': '',
+                'categories': [],
+                'm3u8_urls': [],
+                'best_m3u8_url': ''
+            }
+            
+            # 提取标题
+            title_element = soup.find('h1', class_='title')
+            if title_element:
+                video_data['title'] = title_element.get_text(strip=True)
+            
+            # 提取viewkey
+            viewkey_match = re.search(r'viewkey=([^&]+)', video_url)
+            if viewkey_match:
+                video_data['viewkey'] = viewkey_match.group(1)
+            
+            # 提取缩略图
+            img_element = soup.find('img', class_='videoThumb')
+            if img_element:
+                video_data['thumbnail_url'] = img_element.get('src', '')
+            
+            # 提取预览视频
+            video_element = soup.find('video')
+            if video_element:
+                video_data['preview_url'] = video_element.get('src', '')
+            
+            # 提取时长
+            duration_element = soup.find('span', class_='duration')
+            if duration_element:
+                video_data['duration'] = duration_element.get_text(strip=True)
+            
+            # 提取上传者
+            uploader_element = soup.find('a', class_='username')
+            if uploader_element:
+                video_data['uploader'] = uploader_element.get_text(strip=True)
+            
+            # 提取观看次数
+            views_element = soup.find('span', class_='views')
+            if views_element:
+                video_data['views'] = views_element.get_text(strip=True)
+            
+            # 提取发布时间
+            publish_element = soup.find('span', class_='publishDate')
+            if publish_element:
+                video_data['publish_time'] = publish_element.get_text(strip=True)
+            
+            # 提取分类
+            categories = []
+            category_elements = soup.find_all('a', class_='category')
+            for cat in category_elements:
+                categories.append({
+                    'name': cat.get_text(strip=True),
+                    'url': cat.get('href', '')
+                })
+            video_data['categories'] = categories
+            
+            # 提取m3u8地址
+            m3u8_urls = []
+            scripts = soup.find_all('script')
+            for script in scripts:
+                script_content = script.string
+                if script_content:
+                    m3u8_patterns = [
+                        r'https?://[^"\']*\.m3u8[^"\']*',
+                        r'"videoUrl":"([^"]*\.m3u8[^"]*)"',
+                        r"'videoUrl':'([^']*\.m3u8[^']*)'",
+                    ]
+                    
+                    for pattern in m3u8_patterns:
+                        matches = re.findall(pattern, script_content, re.IGNORECASE)
+                        for match in matches:
+                            if isinstance(match, tuple):
+                                match = match[0]
+                            if match and match not in m3u8_urls:
+                                clean_url = match.replace('\\/', '/')
+                                m3u8_urls.append(clean_url)
+            
+            video_data['m3u8_urls'] = m3u8_urls
+            
+            # 选择最佳m3u8地址
+            if m3u8_urls:
+                priority_order = ['1080P', '720P', '480P', '240P']
+                for priority in priority_order:
+                    for url in m3u8_urls:
+                        if priority in url:
+                            video_data['best_m3u8_url'] = url
+                            break
+                    if video_data['best_m3u8_url']:
+                        break
+                
+                if not video_data['best_m3u8_url'] and m3u8_urls:
+                    video_data['best_m3u8_url'] = m3u8_urls[0]
+            
+            # 关闭当前标签页（但保留至少一个标签页）
+            try:
+                if len(self.driver.window_handles) > 1:
+                    self.driver.close()
+                    self.driver.switch_to.window(self.driver.window_handles[0])
+            except Exception as e:
+                print(f"关闭标签页失败: {e}")
+                # 尝试重新初始化driver
+                try:
+                    if len(self.driver.window_handles) > 0:
+                        self.driver.switch_to.window(self.driver.window_handles[0])
+                except:
+                    pass
+            
+            return video_data
+            
+        except Exception as e:
+            print(f"分析视频URL失败 {video_url}: {e}")
+            # 确保关闭标签页并切换回主标签页（但保留至少一个标签页）
+            try:
+                if self.driver and len(self.driver.window_handles) > 1:
+                    self.driver.close()
+                    self.driver.switch_to.window(self.driver.window_handles[0])
+            except:
+                pass
+            return None
+    
+    def analyze_video_urls_with_selenium_tabs(self, video_urls, max_workers=5):
+        """使用Selenium多标签页方式分析视频URL"""
+        print("使用Selenium多标签页方式分析视频URL...")
+        
+        # 限制线程数，避免打开过多标签页
+        max_workers = min(max_workers, 3)  # 进一步减少线程数
+        
+        # 确保主标签页存在（用于年龄验证）
+        try:
+            if len(self.driver.window_handles) == 0:
+                print("错误：没有可用的标签页")
+                return []
+            
+            # 记录主标签页
+            main_handle = self.driver.window_handles[0]
+        except Exception as e:
+            print(f"检查标签页失败: {e}")
+            return []
+        
+        # 创建线程池
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_url = {executor.submit(self.analyze_single_video_url_with_tab, url): url for url in video_urls}
+            
+            # 收集结果
+            analyzed_data = []
+            completed = 0
+            failed_count = 0
+            
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    result = future.result()
+                    if result:
+                        analyzed_data.append(result)
+                    else:
+                        failed_count += 1
+                    completed += 1
+                    
+                    if completed % 10 == 0:
+                        print(f"已分析 {completed}/{len(video_urls)} 个视频URL (失败: {failed_count})")
+                        
+                except Exception as e:
+                    print(f"分析视频URL失败 {url}: {e}")
+                    failed_count += 1
+                    completed += 1
+                    
+                    # 如果失败率过高，考虑降低线程数
+                    if failed_count > completed * 0.5 and completed > 20:
+                        print("失败率过高，建议降低线程数或切换到requests方式")
+        
+        # 确保最终回到主标签页
+        try:
+            if main_handle in self.driver.window_handles:
+                self.driver.switch_to.window(main_handle)
+            elif len(self.driver.window_handles) > 0:
+                self.driver.switch_to.window(self.driver.window_handles[0])
+        except Exception as e:
+            print(f"切换回主标签页失败: {e}")
+        
+        print(f"分析完成，成功分析 {len(analyzed_data)} 个视频，失败 {failed_count} 个")
+        
+        # 如果失败率过高，自动切换到requests方式
+        if failed_count > len(video_urls) * 0.3 and len(analyzed_data) < len(video_urls) * 0.5:
+            print("Selenium方式失败率过高，自动切换到requests方式...")
+            remaining_urls = [url for url in video_urls if not any(data.get('url') == url for data in analyzed_data)]
+            if remaining_urls:
+                print(f"使用requests方式处理剩余的 {len(remaining_urls)} 个URL...")
+                requests_data = self.analyze_video_urls_with_requests(remaining_urls, max_workers=5)
+                analyzed_data.extend(requests_data)
+                print(f"requests方式成功分析 {len(requests_data)} 个视频")
+        
+        return analyzed_data
+    
+    def download_video_data_parallel(self, analyzed_data, max_workers=20):
+        """多线程下载视频数据"""
+        print(f"开始多线程下载 {len(analyzed_data)} 个视频数据...")
+        
+        # 创建下载任务
+        download_tasks = []
+        for video_data in analyzed_data:
+            if video_data.get('thumbnail_url'):
+                download_tasks.append(('thumbnail', video_data['thumbnail_url'], video_data))
+            if video_data.get('preview_url'):
+                download_tasks.append(('preview', video_data['preview_url'], video_data))
+        
+        # 创建线程池
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有下载任务
+            future_to_task = {executor.submit(self.download_single_file, task): task for task in download_tasks}
+            
+            # 收集结果
+            download_results = {}
+            completed = 0
+            
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    result = future.result()
+                    if result:
+                        download_results[result['filepath']] = result['success']
+                    completed += 1
+                    
+                    if completed % 10 == 0:
+                        print(f"已下载 {completed}/{len(download_tasks)} 个文件")
+                        
+                except Exception as e:
+                    print(f"下载任务失败: {e}")
+                    completed += 1
+        
+        print(f"下载完成，成功下载 {sum(1 for success in download_results.values() if success)}/{len(download_results)} 个文件")
+        return download_results
+    
+    def download_single_file(self, task):
+        """下载单个文件"""
+        file_type, url, video_data = task
+        
+        try:
+            # 创建文件夹
+            viewkey = video_data.get('viewkey', 'unknown')
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
+            os.makedirs(folder_path, exist_ok=True)
+            
+            # 确定文件名
+            if file_type == 'thumbnail':
+                filename = OUTPUT_CONFIG['thumbnail_filename']
+            elif file_type == 'preview':
+                filename = OUTPUT_CONFIG['preview_filename']
+            else:
+                filename = f"{file_type}.mp4"
+            
+            filepath = os.path.join(folder_path, filename)
+            
+            # 下载文件
+            success = self.download_file(url, filepath)
+            
+            # 创建HTML页面
+            if success:
+                self.create_html_page(video_data, folder_path)
+            
+            return {
+                'filepath': filepath,
+                'success': success,
+                'url': url,
+                'file_type': file_type
+            }
+            
+        except Exception as e:
+            print(f"下载文件失败 {url}: {e}")
+            return {
+                'filepath': '',
+                'success': False,
+                'url': url,
+                'file_type': file_type
+            }
+    
+    def optimized_run(self, start_page=1, use_requests_for_details=True):
+        """优化的运行流程"""
+        print("开始优化采集流程...")
+        
+        # 阶段1: 快速轮询所有页面
+        print("\n=== 阶段1: 快速轮询所有页面 ===")
+        video_urls = self.fast_scrape_all_pages(start_page)
+        
+        if not video_urls:
+            print("未找到任何视频链接")
+            return
+        
+        # 获取完视频地址列表后关闭Selenium（如果使用requests方式）
+        if use_requests_for_details and self.driver:
+            print("视频地址列表获取完成，关闭Selenium以释放资源...")
+            self.close_driver()
+        
+        # 阶段2: 多线程分析视频URL（同时进行下载）
+        print("\n=== 阶段2: 多线程分析视频URL（同时进行下载） ===")
+        analyzed_data = self.analyze_video_urls_parallel(video_urls, max_workers=10, use_requests=use_requests_for_details)
+        
+        if not analyzed_data:
+            print("未成功分析任何视频数据")
+            return
+        
+        # 统计结果
+        print(f"\n=== 采集完成 ===")
+        print(f"总视频链接数: {len(video_urls)}")
+        print(f"成功分析数: {len(analyzed_data)}")
+        print(f"下载已在分析阶段同时完成")
+        
+        return {
+            'video_urls': video_urls,
+            'analyzed_data': analyzed_data,
+            'download_results': {}  # 下载结果已在分析阶段处理
+        }
 
 if __name__ == "__main__":
     scraper = PornhubScraper()
-    scraper.run()
+    
+    # 从配置文件获取使用方式
+    use_requests = DETAIL_PAGE_CONFIG.get('use_requests', True)  # 默认使用requests方式（更稳定）
+    
+    print(f"使用方式: {'requests' if use_requests else 'Selenium多标签页'}")
+    print(f"详情页面线程数: {DETAIL_PAGE_CONFIG.get('max_workers_requests' if use_requests else 'max_workers_selenium', 10)}")
+    
+    # 使用优化的运行流程
+    result = scraper.optimized_run(use_requests_for_details=use_requests)
+    
+    if result:
+        print("采集完成！")
+    else:
+        print("采集失败！")
