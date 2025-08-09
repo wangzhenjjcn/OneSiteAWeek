@@ -1255,6 +1255,30 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
     
     def create_html_page(self, video_data, folder_path):
         """创建HTML页面"""
+        # 获取m3u8地址列表
+        m3u8_urls = video_data.get('m3u8_urls', [])
+        best_m3u8_url = video_data.get('best_m3u8_url', '')
+        
+        # 生成m3u8播放器HTML
+        m3u8_player_html = ""
+        if m3u8_urls:
+            m3u8_player_html = f"""
+        <div class="m3u8-links-section">
+            <h3>🎬 M3U8 视频链接</h3>
+            <div class="m3u8-links-container">
+                <div class="best-quality-link">
+                    {f'<a href="{best_m3u8_url}" target="_blank" class="best-quality-btn">🎯 打开最佳质量视频 (新标签页)</a>' if best_m3u8_url and best_m3u8_url != 'N/A' else '<p class="no-link">暂无可用的m3u8视频链接</p>'}
+                </div>
+                <div class="all-quality-links">
+                    <h4>所有可用质量:</h4>
+                    <div class="quality-links">
+                        {self._generate_quality_links(m3u8_urls)}
+                    </div>
+                </div>
+            </div>
+        </div>
+            """
+        
         html_content = f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -1262,6 +1286,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{video_data['title']}</title>
+
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -1330,6 +1355,73 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             height: auto;
             border-radius: 8px;
         }}
+        .m3u8-links-section {{
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 2px solid #007bff;
+        }}
+        .m3u8-links-container {{
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }}
+        .best-quality-link {{
+            text-align: center;
+            margin-bottom: 15px;
+        }}
+        .best-quality-btn {{
+            display: inline-block;
+            padding: 15px 30px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: bold;
+            transition: background 0.3s;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }}
+        .best-quality-btn:hover {{
+            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            color: white;
+            text-decoration: none;
+        }}
+        .no-link {{
+            text-align: center;
+            color: #6c757d;
+            font-style: italic;
+            padding: 20px;
+            background: #e9ecef;
+            border-radius: 5px;
+        }}
+        .all-quality-links h4 {{
+            margin-bottom: 10px;
+            color: #495057;
+        }}
+        .quality-links {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .quality-link {{
+            display: inline-block;
+            padding: 8px 15px;
+            background: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: background 0.3s;
+        }}
+        .quality-link:hover {{
+            background: #0056b3;
+            color: white;
+            text-decoration: none;
+        }}
         .download-links {{
             margin-top: 20px;
             padding: 15px;
@@ -1363,6 +1455,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         .thumbnail:hover .hover-video {{
             opacity: 1;
         }}
+
     </style>
 </head>
 <body>
@@ -1371,8 +1464,12 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         
         <div class="video-info">
             <div class="thumbnail">
-                <img src="{OUTPUT_CONFIG['thumbnail_filename']}" alt="{video_data['alt_text']}" id="thumbnail">
-                <video class="hover-video" id="hoverVideo" muted loop>
+                <img src="{OUTPUT_CONFIG['thumbnail_filename']}" alt="{video_data['alt_text']}" id="thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                <div style="display:none; text-align:center; padding:20px; background:#f8f9fa; border-radius:8px; color:#666;">
+                    <p>缩略图文件不存在</p>
+                    <p>thumbnail.jpg</p>
+                </div>
+                <video class="hover-video" id="hoverVideo" muted loop onerror="this.style.display='none';">
                     <source src="{OUTPUT_CONFIG['preview_filename']}" type="video/webm">
                 </video>
             </div>
@@ -1424,11 +1521,13 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         
         <div class="video-player">
             <h3>预览视频</h3>
-            <video controls>
+            <video controls onerror="this.parentElement.innerHTML='<p style=\\'text-align:center; color:#666; padding:20px;\\'>预览视频文件不存在<br>preview.webm</p>';">
                 <source src="{OUTPUT_CONFIG['preview_filename']}" type="video/webm">
                 您的浏览器不支持视频播放。
             </video>
         </div>
+        
+        {m3u8_player_html}
         
         <div class="download-links">
             <h3>下载链接</h3>
@@ -1453,6 +1552,27 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 hoverVideo.currentTime = 0;
             }});
         }}
+        
+        // 添加一些交互提示
+        document.addEventListener('DOMContentLoaded', function() {{
+            const bestBtn = document.querySelector('.best-quality-btn');
+            const qualityLinks = document.querySelectorAll('.quality-link');
+            
+            // 为最佳质量按钮添加点击提示
+            if (bestBtn) {{
+                bestBtn.addEventListener('click', function() {{
+                    // 可以在这里添加统计或其他逻辑
+                    console.log('打开最佳质量m3u8视频');
+                }});
+            }}
+            
+            // 为质量链接添加点击提示
+            qualityLinks.forEach(function(link) {{
+                link.addEventListener('click', function() {{
+                    console.log('打开m3u8视频:', this.href);
+                }});
+            }});
+        }});
     </script>
 </body>
 </html>
@@ -1463,6 +1583,32 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             f.write(html_content)
         
         return html_filepath
+        
+        html_filepath = os.path.join(folder_path, OUTPUT_CONFIG['html_filename'])
+        with open(html_filepath, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        return html_filepath
+    
+    def _generate_quality_links(self, m3u8_urls):
+        """生成质量选择链接HTML"""
+        if not m3u8_urls:
+            return "<p class='no-link'>暂无其他质量可用</p>"
+        
+        links_html = ""
+        quality_priority = ['1080P', '720P', '480P', '240P', 'HD', 'SD']
+        
+        for i, url in enumerate(m3u8_urls):
+            # 尝试从URL中提取质量信息
+            quality_name = f"质量 {i+1}"
+            for priority in quality_priority:
+                if priority in url:
+                    quality_name = priority
+                    break
+            
+            links_html += f'<a href="{url}" target="_blank" class="quality-link">{quality_name}</a>'
+        
+        return links_html
     
     def process_video(self, video_data):
         """处理单个视频"""
