@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 Websites/pronhub.com/data/
+Websites/pronhub.com/database/
 *.py[cod]
 *$py.class
 
