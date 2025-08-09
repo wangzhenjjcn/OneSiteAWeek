@@ -1583,12 +1583,6 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             f.write(html_content)
         
         return html_filepath
-        
-        html_filepath = os.path.join(folder_path, OUTPUT_CONFIG['html_filename'])
-        with open(html_filepath, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        return html_filepath
     
     def _generate_quality_links(self, m3u8_urls):
         """生成质量选择链接HTML"""
@@ -2085,6 +2079,49 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         print(f"轮询完成，总共找到 {len(all_video_urls)} 个视频链接")
         return all_video_urls
     
+    def fast_scrape_limited_pages(self, start_page=1, max_pages=5):
+        """快速轮询指定数量的页面"""
+        print(f"开始快速轮询 {max_pages} 个页面...")
+        
+        all_video_urls = []
+        is_first_page = True
+        
+        for page_num in range(start_page, start_page + max_pages):
+            try:
+                print(f"正在快速获取第 {page_num} 页...")
+                
+                # 构建页面URL
+                page_url = f"{self.base_url}?page={page_num}"
+                
+                # 快速获取页面内容（带超时控制）
+                page_source = self.get_page_with_timeout_control(page_url, is_first_page)
+                
+                if not page_source:
+                    print(f"第 {page_num} 页获取失败，跳过此页")
+                    continue
+                
+                # 快速解析视频链接（不获取详细信息）
+                video_urls = self.fast_parse_video_urls(page_source)
+                
+                if not video_urls:
+                    print(f"第 {page_num} 页没有找到视频链接")
+                    continue
+                
+                print(f"第 {page_num} 页找到 {len(video_urls)} 个视频链接")
+                all_video_urls.extend(video_urls)
+                
+                is_first_page = False
+                
+                # 短暂延迟，避免请求过快
+                time.sleep(0.5)
+                
+            except Exception as e:
+                print(f"处理第 {page_num} 页时出错: {e}")
+                continue
+        
+        print(f"限制轮询完成，总共找到 {len(all_video_urls)} 个视频链接")
+        return all_video_urls
+    
     def get_page_with_timeout_control(self, url, is_first_page=False):
         """带超时控制的分页获取"""
         max_retries = 3
@@ -2402,45 +2439,42 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             return None
     
     def download_video_data_immediately(self, video_data):
-        """立即下载视频数据"""
+        """立即下载视频数据（优化版：使用异步下载队列）"""
         try:
             viewkey = video_data.get('viewkey', 'unknown')
             script_dir = os.path.dirname(os.path.abspath(__file__))
             folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
             os.makedirs(folder_path, exist_ok=True)
             
+            # 检查是否已完成（跳过重复处理）
+            if SCRAPER_CONFIG.get('skip_existing', True) and self.is_video_completed(viewkey):
+                if DEBUG['verbose']:
+                    print(f"跳过已完成的视频: {viewkey}")
+                return
+            
             # 创建HTML页面
             html_path = self.create_html_page(video_data, folder_path)
+            if DEBUG['verbose']:
+                print(f"✓ HTML页面创建: {viewkey}")
             
-            # 下载缩略图
+            # 启动下载工作线程（如果还没启动）
+            if not hasattr(self, 'download_workers') or not self.download_workers:
+                self.start_download_workers()
+            
+            # 添加下载任务到队列（异步下载）
             if video_data.get('thumbnail_url'):
                 thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
-                try:
-                    success = self.download_file(video_data['thumbnail_url'], thumbnail_path)
-                    if success:
-                        print(f"✓ 缩略图下载成功: {viewkey}")
-                    else:
-                        print(f"✗ 缩略图下载失败: {viewkey}")
-                except Exception as e:
-                    print(f"缩略图下载出错 {viewkey}: {e}")
+                self.add_download_task(video_data['thumbnail_url'], thumbnail_path, "缩略图")
             
-            # 下载预览视频
             if video_data.get('preview_url'):
                 preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
-                try:
-                    success = self.download_file(video_data['preview_url'], preview_path)
-                    if success:
-                        print(f"✓ 预览视频下载成功: {viewkey}")
-                    else:
-                        print(f"✗ 预览视频下载失败: {viewkey}")
-                except Exception as e:
-                    print(f"预览视频下载出错 {viewkey}: {e}")
+                self.add_download_task(video_data['preview_url'], preview_path, "预览视频")
             
             # 创建采集日志
             self.create_collection_log(video_data, folder_path, success=True)
             
         except Exception as e:
-            print(f"立即下载视频数据失败 {viewkey}: {e}")
+            print(f"处理视频数据失败 {video_data.get('viewkey', 'unknown')}: {e}")
             # 创建失败日志
             try:
                 self.create_collection_log(video_data, folder_path, success=False, error_msg=str(e))
@@ -2815,56 +2849,145 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 'file_type': file_type
             }
     
-    def optimized_run(self, start_page=1, use_requests_for_details=True):
-        """优化的运行流程"""
-        print("开始优化采集流程...")
+    def optimized_run(self, start_page=1, use_requests_for_details=True, max_pages=None):
+        """优化的运行流程（改进版）"""
+        import time
+        start_time = time.time()
         
-        # 阶段1: 快速轮询所有页面
-        print("\n=== 阶段1: 快速轮询所有页面 ===")
-        video_urls = self.fast_scrape_all_pages(start_page)
+        print("🚀 开始优化采集流程...")
+        print(f"📊 配置: 起始页={start_page}, 使用{'requests' if use_requests_for_details else 'Selenium'}模式")
         
-        if not video_urls:
-            print("未找到任何视频链接")
-            return
+        try:
+            # 阶段1: 快速轮询所有页面
+            print("\n=== 🔍 阶段1: 快速轮询所有页面 ===")
+            if max_pages:
+                print(f"限制页数: {max_pages}")
+                video_urls = self.fast_scrape_limited_pages(start_page, max_pages)
+            else:
+                video_urls = self.fast_scrape_all_pages(start_page)
+            
+            if not video_urls:
+                print("❌ 未找到任何视频链接")
+                return None
+            
+            print(f"✅ 第一阶段完成，找到 {len(video_urls)} 个视频链接")
+            
+            # 获取完视频地址列表后关闭Selenium（如果使用requests方式）
+            if use_requests_for_details and self.driver:
+                print("💾 视频地址列表获取完成，关闭Selenium以释放资源...")
+                self.close_driver()
+            
+            # 阶段2: 多线程分析视频URL（同时进行下载）
+            print("\n=== 📥 阶段2: 多线程分析视频URL（同时进行下载） ===")
+            max_workers = DETAIL_PAGE_CONFIG.get('max_workers_requests' if use_requests_for_details else 'max_workers_selenium', 5)
+            print(f"使用 {max_workers} 个工作线程")
+            
+            analyzed_data = self.analyze_video_urls_parallel(video_urls, max_workers=max_workers, use_requests=use_requests_for_details)
+            
+            if not analyzed_data:
+                print("❌ 未成功分析任何视频数据")
+                return None
+            
+            # 等待下载完成
+            if hasattr(self, 'download_workers') and self.download_workers:
+                print("\n⏳ 等待下载队列完成...")
+                self.wait_for_downloads()
+                self.stop_download_workers()
+            
+            # 统计结果
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            print(f"\n=== 🎉 采集完成 ===")
+            print(f"⏱️  总耗时: {duration:.1f} 秒")
+            print(f"🔗 总视频链接数: {len(video_urls)}")
+            print(f"✅ 成功分析数: {len(analyzed_data)}")
+            print(f"📈 成功率: {len(analyzed_data)/len(video_urls)*100:.1f}%")
+            print(f"📁 数据保存在: {os.path.abspath(OUTPUT_CONFIG['data_folder'])}")
+            
+            return {
+                'video_urls': video_urls,
+                'analyzed_data': analyzed_data,
+                'success_count': len(analyzed_data),
+                'total_count': len(video_urls),
+                'duration': duration,
+                'success_rate': len(analyzed_data)/len(video_urls)*100
+            }
+            
+        except KeyboardInterrupt:
+            print("\n\n⚠️ 用户中断采集")
+            # 清理资源
+            if hasattr(self, 'download_workers') and self.download_workers:
+                self.stop_download_workers()
+            return None
+        except Exception as e:
+            print(f"\n❌ 采集过程中出现错误: {e}")
+            # 清理资源
+            if hasattr(self, 'download_workers') and self.download_workers:
+                self.stop_download_workers()
+            return None
+
+def main():
+    """主函数 - 支持命令行参数"""
+    import sys
+    
+    # 解析命令行参数
+    start_page = 1
+    max_pages = None
+    
+    if len(sys.argv) > 1:
+        try:
+            start_page = int(sys.argv[1])
+        except ValueError:
+            print("❌ 起始页参数无效，使用默认值 1")
+    
+    if len(sys.argv) > 2:
+        try:
+            max_pages = int(sys.argv[2])
+            if max_pages <= 0:
+                max_pages = None
+        except ValueError:
+            print("❌ 最大页数参数无效，将采集所有页面")
+    
+    print("🎯 Pornhub视频采集工具")
+    print("=" * 50)
+    
+    try:
+        scraper = PornhubScraper()
         
-        # 获取完视频地址列表后关闭Selenium（如果使用requests方式）
-        if use_requests_for_details and self.driver:
-            print("视频地址列表获取完成，关闭Selenium以释放资源...")
-            self.close_driver()
+        # 从配置文件获取使用方式
+        use_requests = DETAIL_PAGE_CONFIG.get('use_requests', True)  # 默认使用requests方式（更稳定）
         
-        # 阶段2: 多线程分析视频URL（同时进行下载）
-        print("\n=== 阶段2: 多线程分析视频URL（同时进行下载） ===")
-        analyzed_data = self.analyze_video_urls_parallel(video_urls, max_workers=10, use_requests=use_requests_for_details)
+        print(f"📊 配置信息:")
+        print(f"  - 采集模式: {'requests' if use_requests else 'Selenium多标签页'}")
+        print(f"  - 工作线程: {DETAIL_PAGE_CONFIG.get('max_workers_requests' if use_requests else 'max_workers_selenium', 5)}")
+        print(f"  - 下载线程: {SCRAPER_CONFIG.get('download_threads', 10)}")
+        print(f"  - 起始页面: {start_page}")
+        print(f"  - 页数限制: {max_pages or '无限制'}")
         
-        if not analyzed_data:
-            print("未成功分析任何视频数据")
-            return
+        # 使用优化的运行流程
+        result = scraper.optimized_run(
+            start_page=start_page,
+            use_requests_for_details=use_requests,
+            max_pages=max_pages
+        )
         
-        # 统计结果
-        print(f"\n=== 采集完成 ===")
-        print(f"总视频链接数: {len(video_urls)}")
-        print(f"成功分析数: {len(analyzed_data)}")
-        print(f"下载已在分析阶段同时完成")
-        
-        return {
-            'video_urls': video_urls,
-            'analyzed_data': analyzed_data,
-            'download_results': {}  # 下载结果已在分析阶段处理
-        }
+        if result:
+            print("\n🎉 采集成功完成！")
+            print(f"📈 详细统计:")
+            print(f"  - 成功率: {result.get('success_rate', 0):.1f}%")
+            print(f"  - 处理数量: {result.get('success_count', 0)}/{result.get('total_count', 0)}")
+            print(f"  - 总耗时: {result.get('duration', 0):.1f} 秒")
+        else:
+            print("\n❌ 采集失败或被中断")
+            
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 用户中断程序")
+    except Exception as e:
+        print(f"\n❌ 程序运行错误: {e}")
+        import traceback
+        if DEBUG.get('verbose', False):
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    scraper = PornhubScraper()
-    
-    # 从配置文件获取使用方式
-    use_requests = DETAIL_PAGE_CONFIG.get('use_requests', True)  # 默认使用requests方式（更稳定）
-    
-    print(f"使用方式: {'requests' if use_requests else 'Selenium多标签页'}")
-    print(f"详情页面线程数: {DETAIL_PAGE_CONFIG.get('max_workers_requests' if use_requests else 'max_workers_selenium', 10)}")
-    
-    # 使用优化的运行流程
-    result = scraper.optimized_run(use_requests_for_details=use_requests)
-    
-    if result:
-        print("采集完成！")
-    else:
-        print("采集失败！")
+    main()
