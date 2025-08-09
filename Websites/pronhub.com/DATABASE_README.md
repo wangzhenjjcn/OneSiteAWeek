@@ -58,22 +58,22 @@ python app.py 10 3
 
 ```bash
 # 查看数据库统计信息
-python db_viewer.py --stats
+python app.py --stats
 
 # 查看最近采集的20个视频
-python db_viewer.py --recent 20
+python app.py --recent 20
 
 # 搜索视频（按标题或上传者）
-python db_viewer.py --search "关键词"
+python app.py --search "关键词"
 
-# 查看特定视频详情
-python db_viewer.py --detail "视频ID"
+# 搜索并限制结果数量
+python app.py --search "关键词" 10
 
 # 导出数据到JSON文件
-python db_viewer.py --export "videos.json"
+python app.py --export "videos.json"
 
 # 导出前100条数据
-python db_viewer.py --export "videos.json" --limit 100
+python app.py --export "videos.json" 100
 ```
 
 ### 3. 数据库位置
@@ -87,7 +87,7 @@ database/pornhub_videos.db
 
 ### 统计信息
 ```bash
-python db_viewer.py --stats
+python app.py --stats
 ```
 输出：
 ```
@@ -107,30 +107,29 @@ python db_viewer.py --stats
   2. 分类B              (18 个视频)
 ```
 
-### 视频详情
+### 搜索视频
 ```bash
-python db_viewer.py --detail "ph62af9cfcd3b5c"
+python app.py --search "关键词" 5
 ```
 输出：
 ```
 ============================================================
-📺 视频详细信息
+🔍 搜索结果: '关键词' (前5条)
 ============================================================
-标题: 视频标题
-视频ID: ph62af9cfcd3b5c
-原始链接: https://cn.pornhub.com/view_video.php?viewkey=ph62af9cfcd3b5c
-上传者: 上传者名称
-观看数: 229K次观看
-最佳M3U8: https://example.com/video.m3u8
-缩略图URL: https://example.com/thumb.jpg
-预览视频URL: https://example.com/preview.webm
-采集时间: 2025-08-09 04:28:53
 
-📹 可用M3U8链接 (4个):
-  1. https://example.com/1080p.m3u8
-  2. https://example.com/720p.m3u8
-  3. https://example.com/480p.m3u8
-  4. https://example.com/240p.m3u8
+ 1. 视频标题1
+    ID: ph62af9cfcd3b5c
+    上传者: 上传者名称
+    观看数: 229K次观看
+    时长: 10:25
+    采集时间: 2025-08-09 04:28:53
+
+ 2. 视频标题2
+    ID: ph62af9cfcd3b5d
+    上传者: 上传者名称
+    观看数: 150K次观看
+    时长: 8:30
+    采集时间: 2025-08-09 04:25:12
 ```
 
 ## 与原版本的区别
@@ -178,6 +177,40 @@ python db_viewer.py --detail "ph62af9cfcd3b5c"
 4. **数据完整性**: 数据库确保了数据的一致性和完整性
 5. **备份**: 建议定期备份 `database/pornhub_videos.db` 文件
 
+## 使用说明
+
+### 数据采集
+```bash
+# 采集第1页
+python app.py 1 1
+
+# 采集第1-3页
+python app.py 1 3
+```
+
+### 数据库查询
+```bash
+# 查看统计信息
+python app.py --stats
+
+# 查看最近10个视频
+python app.py --recent 10
+
+# 搜索包含"学生"的视频，显示前5条
+python app.py --search "学生" 5
+
+# 导出所有数据
+python app.py --export "all_videos.json"
+
+# 导出前500条数据
+python app.py --export "top500.json" 500
+```
+
 ## 开发者信息
 
-数据库管理模块 (`database_manager.py`) 提供了完整的数据库操作API，可以轻松扩展新功能。 
+所有功能已完全整合到 `app.py` 中，包括：
+- **DatabaseManager类**: 数据库管理功能
+- **PornhubScraper类**: 视频采集功能  
+- **命令行接口**: 数据查询和导出功能
+
+无需额外的独立文件，单个 `app.py` 文件即可完成所有操作。 
