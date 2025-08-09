@@ -1723,22 +1723,48 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             z-index: 10;
         }}
         .info-details {{
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px 20px;
+            align-items: start;
+        }}
+        @media (max-width: 768px) {{
+            .info-details {{
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }}
         }}
         .info-item {{
             display: flex;
-            align-items: center;
-            gap: 10px;
+            flex-direction: column;
+            gap: 5px;
         }}
         .info-label {{
             font-weight: bold;
             color: #666;
-            min-width: 100px;
+            font-size: 14px;
         }}
         .info-value {{
             color: #333;
+            word-wrap: break-word;
+        }}
+        .truncated-link {{
+            color: #007bff;
+            text-decoration: none;
+            display: block;
+            max-width: 100%;
+            overflow: hidden;
+        }}
+        .truncated-link:hover {{
+            color: #0056b3;
+            text-decoration: underline;
+        }}
+        .link-text {{
+            display: block;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
         }}
         .video-player {{
             margin-top: 20px;
@@ -2093,14 +2119,18 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 <div class="info-item">
                     <span class="info-label">高清地址:</span>
                     <span class="info-value">
-                        <a href="{video_data.get('best_m3u8_url', '')}" target="_blank" style="word-break: break-all;">
-                            {video_data.get('best_m3u8_url', 'N/A')}
+                        <a href="{video_data.get('best_m3u8_url', '')}" target="_blank" class="truncated-link" title="{video_data.get('best_m3u8_url', 'N/A')}">
+                            <span class="link-text">{video_data.get('best_m3u8_url', 'N/A')}</span>
                         </a>
                     </span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">原始链接:</span>
-                    <span class="info-value"><a href="{video_data['video_url']}" target="_blank">{video_data['video_url']}</a></span>
+                    <span class="info-value">
+                        <a href="{video_data['video_url']}" target="_blank" class="truncated-link" title="{video_data['video_url']}">
+                            <span class="link-text">{video_data['video_url']}</span>
+                        </a>
+                    </span>
                 </div>
             </div>
         </div>
@@ -3246,59 +3276,17 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             # 解析视频详细信息
             soup = BeautifulSoup(page_source, 'html.parser')
             
-            # 提取基本信息
-            video_data = {
-                'url': video_url,
-                'video_url': video_url,  # 添加video_url字段
-                'title': '',
-                'viewkey': '',
-                'video_id': '',
-                'thumbnail_url': '',
-                'preview_url': '',
-                'duration': '',
-                'uploader': '',
-                'views': '',
-                'publish_time': '',
-                'categories': [],
-                'm3u8_urls': [],
-                'best_m3u8_url': '',
-                'alt_text': ''  # 添加alt_text字段
-            }
+            # 使用改进的提取函数获取基本信息
+            video_data = self.extract_video_metadata(soup, video_url)
             
-            # 提取标题
-            title_element = soup.find('h1', class_='title')
-            if title_element:
-                video_data['title'] = title_element.get_text(strip=True)
-            
-            # 提取viewkey
-            viewkey_match = re.search(r'viewkey=([^&]+)', video_url)
-            if viewkey_match:
-                video_data['viewkey'] = viewkey_match.group(1)
+            # 保持原有字段名的兼容性
+            video_data['url'] = video_url
+            video_data['alt_text'] = ''
             
             # 提取缩略图和预览视频 - 使用改进的方法
             thumbnail_url, preview_url = self.extract_thumbnail_and_preview_urls(soup)
             video_data['thumbnail_url'] = thumbnail_url
             video_data['preview_url'] = preview_url
-            
-            # 提取时长
-            duration_element = soup.find('span', class_='duration')
-            if duration_element:
-                video_data['duration'] = duration_element.get_text(strip=True)
-            
-            # 提取上传者
-            uploader_element = soup.find('a', class_='username')
-            if uploader_element:
-                video_data['uploader'] = uploader_element.get_text(strip=True)
-            
-            # 提取观看次数
-            views_element = soup.find('span', class_='views')
-            if views_element:
-                video_data['views'] = views_element.get_text(strip=True)
-            
-            # 提取发布时间
-            publish_element = soup.find('span', class_='publishDate')
-            if publish_element:
-                video_data['publish_time'] = publish_element.get_text(strip=True)
             
             # 提取分类
             categories = []
@@ -3480,57 +3468,16 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             # 解析视频详细信息
             soup = BeautifulSoup(page_source, 'html.parser')
             
-            # 提取基本信息
-            video_data = {
-                'url': video_url,
-                'title': '',
-                'viewkey': '',
-                'video_id': '',
-                'thumbnail_url': '',
-                'preview_url': '',
-                'duration': '',
-                'uploader': '',
-                'views': '',
-                'publish_time': '',
-                'categories': [],
-                'm3u8_urls': [],
-                'best_m3u8_url': ''
-            }
+            # 使用改进的提取函数获取基本信息
+            video_data = self.extract_video_metadata(soup, video_url)
             
-            # 提取标题
-            title_element = soup.find('h1', class_='title')
-            if title_element:
-                video_data['title'] = title_element.get_text(strip=True)
-            
-            # 提取viewkey
-            viewkey_match = re.search(r'viewkey=([^&]+)', video_url)
-            if viewkey_match:
-                video_data['viewkey'] = viewkey_match.group(1)
+            # 保持原有字段名的兼容性
+            video_data['url'] = video_url
             
             # 提取缩略图和预览视频 - 使用改进的方法
             thumbnail_url, preview_url = self.extract_thumbnail_and_preview_urls(soup)
             video_data['thumbnail_url'] = thumbnail_url
             video_data['preview_url'] = preview_url
-            
-            # 提取时长
-            duration_element = soup.find('span', class_='duration')
-            if duration_element:
-                video_data['duration'] = duration_element.get_text(strip=True)
-            
-            # 提取上传者
-            uploader_element = soup.find('a', class_='username')
-            if uploader_element:
-                video_data['uploader'] = uploader_element.get_text(strip=True)
-            
-            # 提取观看次数
-            views_element = soup.find('span', class_='views')
-            if views_element:
-                video_data['views'] = views_element.get_text(strip=True)
-            
-            # 提取发布时间
-            publish_element = soup.find('span', class_='publishDate')
-            if publish_element:
-                video_data['publish_time'] = publish_element.get_text(strip=True)
             
             # 提取分类
             categories = []
