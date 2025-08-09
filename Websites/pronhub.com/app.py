@@ -20,6 +20,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
+from database_manager import DatabaseManager
 
 # 禁用SSL警告
 import urllib3
@@ -33,6 +34,9 @@ class PornhubScraper:
         self.download_queue = Queue()
         self.download_results = {}
         self.download_lock = threading.Lock()
+        
+        # 初始化数据库管理器
+        self.db = DatabaseManager()
         
         # 确定是否使用Selenium
         if use_selenium is None:
@@ -1259,25 +1263,16 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         m3u8_urls = video_data.get('m3u8_urls', [])
         best_m3u8_url = video_data.get('best_m3u8_url', '')
         
-        # 生成m3u8播放器HTML
-        m3u8_player_html = ""
+        # 生成质量链接HTML (用于下载链接区域)
+        quality_links_html = ""
         if m3u8_urls:
-            m3u8_player_html = f"""
-        <div class="m3u8-links-section">
-            <h3>🎬 M3U8 视频链接</h3>
-            <div class="m3u8-links-container">
-                <div class="best-quality-link">
-                    {f'<a href="{best_m3u8_url}" target="_blank" class="best-quality-btn">🎯 打开最佳质量视频 (新标签页)</a>' if best_m3u8_url and best_m3u8_url != 'N/A' else '<p class="no-link">暂无可用的m3u8视频链接</p>'}
-                </div>
-                <div class="all-quality-links">
+            quality_links_html = f"""
+                <div class="quality-section">
                     <h4>所有可用质量:</h4>
                     <div class="quality-links">
                         {self._generate_quality_links(m3u8_urls)}
                     </div>
-                </div>
-            </div>
-        </div>
-            """
+                </div>"""
         
         html_content = f"""
 <!DOCTYPE html>
@@ -1309,24 +1304,55 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             margin-bottom: 15px;
         }}
         .video-info {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
+            display: flex;
+            flex-direction: column;
             gap: 20px;
             margin-bottom: 20px;
+        }}
+        @media (min-width: 768px) {{
+            .video-info {{
+                display: grid;
+                grid-template-columns: 570px 1fr;
+                gap: 30px;
+                align-items: start;
+            }}
         }}
         .thumbnail {{
             text-align: center;
             position: relative;
+            width: 570px;
+            height: 320px;
+            margin: 0 auto;
+            overflow: hidden;
+            border-radius: 8px;
         }}
         .thumbnail img {{
-            max-width: 100%;
-            height: auto;
+            width: 570px;
+            height: 320px;
+            object-fit: cover;
             border-radius: 8px;
             cursor: pointer;
-            transition: transform 0.3s ease;
+            transition: opacity 0.3s ease;
         }}
-        .thumbnail img:hover {{
-            transform: scale(1.05);
+        .thumbnail:hover img {{
+            opacity: 0;
+        }}
+        .thumbnail {{
+            position: relative;
+        }}
+        .thumbnail:hover::after {{
+            content: "🎬 点击观看视频";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 10;
         }}
         .info-details {{
             display: flex;
@@ -1355,73 +1381,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             height: auto;
             border-radius: 8px;
         }}
-        .m3u8-links-section {{
-            margin-top: 30px;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 10px;
-            border: 2px solid #007bff;
-        }}
-        .m3u8-links-container {{
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }}
-        .best-quality-link {{
-            text-align: center;
-            margin-bottom: 15px;
-        }}
-        .best-quality-btn {{
-            display: inline-block;
-            padding: 15px 30px;
-            background: #28a745;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-size: 18px;
-            font-weight: bold;
-            transition: background 0.3s;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-        }}
-        .best-quality-btn:hover {{
-            background: #218838;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-            color: white;
-            text-decoration: none;
-        }}
-        .no-link {{
-            text-align: center;
-            color: #6c757d;
-            font-style: italic;
-            padding: 20px;
-            background: #e9ecef;
-            border-radius: 5px;
-        }}
-        .all-quality-links h4 {{
-            margin-bottom: 10px;
-            color: #495057;
-        }}
-        .quality-links {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-        }}
-        .quality-link {{
-            display: inline-block;
-            padding: 8px 15px;
-            background: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-size: 14px;
-            transition: background 0.3s;
-        }}
-        .quality-link:hover {{
-            background: #0056b3;
-            color: white;
-            text-decoration: none;
-        }}
+
         .download-links {{
             margin-top: 20px;
             padding: 15px;
@@ -1441,12 +1401,51 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         .download-links a:hover {{
             background: #0056b3;
         }}
+        .download-items {{
+            margin-bottom: 15px;
+            text-align: center;
+        }}
+        .quality-section {{
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }}
+        .quality-section h4 {{
+            margin-bottom: 10px;
+            color: #495057;
+            font-size: 14px;
+            text-align: center;
+        }}
+        .quality-links {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }}
+        .quality-link {{
+            display: inline-block;
+            padding: 6px 12px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            transition: background 0.3s;
+        }}
+        .quality-link:hover {{
+            background: #1e7e34;
+            color: white;
+            text-decoration: none;
+        }}
         .hover-video {{
             position: absolute;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
+            width: 570px;
+            height: 320px;
+            object-fit: cover;
             opacity: 0;
             transition: opacity 0.3s ease;
             border-radius: 8px;
@@ -1454,6 +1453,225 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         }}
         .thumbnail:hover .hover-video {{
             opacity: 1;
+        }}
+        
+        /* M3U8下载区域样式 */
+        .m3u8-download-section {{
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 2px solid #e9ecef;
+        }}
+        .m3u8-download-section h3 {{
+            margin-bottom: 20px;
+            color: #495057;
+            text-align: center;
+            font-size: 22px;
+        }}
+        .download-methods {{
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }}
+        .method-card {{
+            background: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border: 1px solid #dee2e6;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 15px;
+        }}
+        .method-card h4 {{
+            margin: 0;
+            min-width: 150px;
+            flex-shrink: 0;
+        }}
+        .method-card p {{
+            margin: 0;
+            min-width: 200px;
+            flex-shrink: 0;
+        }}
+        .method-content {{
+            flex: 1;
+            min-width: 300px;
+        }}
+        .method-card h4 {{
+            color: #28a745;
+            font-size: 16px;
+        }}
+        .method-card p {{
+            color: #6c757d;
+            font-size: 14px;
+        }}
+        .download-btn {{
+            display: inline-block;
+            padding: 10px 16px;
+            margin: 5px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+            transition: background 0.3s;
+        }}
+        .download-btn:hover {{
+            background: #0056b3;
+            color: white;
+        }}
+        .online-tools {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .online-tool {{
+            background: #28a745;
+            white-space: nowrap;
+        }}
+        .online-tool:hover {{
+            background: #1e7e34;
+        }}
+        .tool-commands {{
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }}
+        .command-item {{
+            margin-bottom: 0;
+        }}
+        .command-item label {{
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #495057;
+            font-size: 13px;
+        }}
+        .command-box {{
+            display: flex;
+            align-items: center;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 8px;
+        }}
+        .command-box code {{
+            flex: 1;
+            background: none;
+            border: none;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            word-break: break-all;
+            color: #495057;
+        }}
+        .copy-btn {{
+            padding: 4px 8px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 8px;
+        }}
+        .copy-btn:hover {{
+            background: #545b62;
+        }}
+        .copy-btn.copied {{
+            background: #28a745;
+        }}
+        .tool-links {{
+            margin-top: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .tool-link {{
+            display: inline-block;
+            padding: 6px 12px;
+            background: #6c757d;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            transition: background 0.3s;
+        }}
+        .tool-link:hover {{
+            background: #545b62;
+            color: white;
+            text-decoration: none;
+        }}
+        .extension-links {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .extension-link {{
+            display: inline-block;
+            padding: 8px 12px;
+            background: #17a2b8;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 13px;
+            transition: background 0.3s;
+        }}
+        .extension-link:hover {{
+            background: #138496;
+            color: white;
+            text-decoration: none;
+        }}
+        .m3u8-info {{
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }}
+        .info-row {{
+            margin-bottom: 12px;
+        }}
+        .info-row:last-child {{
+            margin-bottom: 0;
+        }}
+        .info-row label {{
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #495057;
+            font-size: 13px;
+        }}
+        .url-box {{
+            display: flex;
+            align-items: center;
+        }}
+        .url-box input {{
+            flex: 1;
+            padding: 6px 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 12px;
+            background: white;
+        }}
+        
+        /* 响应式设计 */
+        @media (max-width: 768px) {{
+            .download-methods {{
+                grid-template-columns: 1fr;
+            }}
+            .command-box {{
+                flex-direction: column;
+                align-items: stretch;
+            }}
+            .command-box code {{
+                margin-bottom: 8px;
+            }}
+            .copy-btn {{
+                margin-left: 0;
+            }}
         }}
 
     </style>
@@ -1463,13 +1681,13 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         <h1 class="video-title">{video_data['title']}</h1>
         
         <div class="video-info">
-            <div class="thumbnail">
+            <div class="thumbnail" onclick="openBestQualityVideo()" style="cursor: pointer;" title="点击观看最佳质量视频">
                 <img src="{OUTPUT_CONFIG['thumbnail_filename']}" alt="{video_data['alt_text']}" id="thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
                 <div style="display:none; text-align:center; padding:20px; background:#f8f9fa; border-radius:8px; color:#666;">
                     <p>缩略图文件不存在</p>
                     <p>thumbnail.jpg</p>
                 </div>
-                <video class="hover-video" id="hoverVideo" muted loop onerror="this.style.display='none';">
+                <video class="hover-video" id="hoverVideo" muted loop onerror="this.style.display='none';" onclick="openBestQualityVideo()" title="点击观看最佳质量视频">
                     <source src="{OUTPUT_CONFIG['preview_filename']}" type="video/webm">
                 </video>
             </div>
@@ -1505,7 +1723,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                     </span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">最佳m3u8:</span>
+                    <span class="info-label">高清地址:</span>
                     <span class="info-value">
                         <a href="{video_data.get('best_m3u8_url', '')}" target="_blank" style="word-break: break-all;">
                             {video_data.get('best_m3u8_url', 'N/A')}
@@ -1519,21 +1737,111 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             </div>
         </div>
         
-        <div class="video-player">
-            <h3>预览视频</h3>
-            <video controls onerror="this.parentElement.innerHTML='<p style=\\'text-align:center; color:#666; padding:20px;\\'>预览视频文件不存在<br>preview.webm</p>';">
-                <source src="{OUTPUT_CONFIG['preview_filename']}" type="video/webm">
-                您的浏览器不支持视频播放。
-            </video>
-        </div>
+
         
-        {m3u8_player_html}
         
         <div class="download-links">
             <h3>下载链接</h3>
-            <a href="{OUTPUT_CONFIG['thumbnail_filename']}" download>下载缩略图</a>
-            <a href="{OUTPUT_CONFIG['preview_filename']}" download>下载预览视频</a>
-            <a href="{video_data['video_url']}" target="_blank">访问原始页面</a>
+            <div class="download-items">
+                <a href="{OUTPUT_CONFIG['thumbnail_filename']}" download>下载缩略图</a>
+                <a href="{OUTPUT_CONFIG['preview_filename']}" download>下载预览视频</a>
+                <a href="{video_data['video_url']}" target="_blank">访问原始页面</a>
+            </div>
+            {quality_links_html}
+        </div>
+        
+        <!-- 视频下载区域 -->
+        <div class="m3u8-download-section">
+            <h3>🎬 视频下载</h3>
+            <div class="download-methods">
+                <div class="method-card">
+                    <h4>🌐 在线解析下载</h4>
+                    <p>直接在新标签页中打开下载网站</p>
+                    <div class="method-content">
+                        <div class="online-tools">
+                            <button class="download-btn online-tool" onclick="openDownloadSite('https://www.8loader.com/')">
+                                8Loader 下载器
+                            </button>
+                            <button class="download-btn online-tool" onclick="openDownloadSite('https://download4.cc/')">
+                                Download4 下载器
+                            </button>
+                            <button class="download-btn online-tool" onclick="openDownloadSite('https://www.clipconverter.cc/')">
+                                ClipConverter
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="method-card">
+                    <h4>🛠️ 工具下载</h4>
+                    <p>适合技术用户：使用专业下载工具</p>
+                    <div class="method-content">
+                        <div class="tool-commands">
+                        <div class="command-item">
+                            <label>yt-dlp 命令：</label>
+                            <div class="command-box">
+                                <code id="ytdlp-command">yt-dlp "{video_data.get('best_m3u8_url', '')}"</code>
+                                <button class="copy-btn" onclick="copyCommand('ytdlp-command')">复制</button>
+                            </div>
+                        </div>
+                        <div class="command-item">
+                            <label>N_m3u8DL-RE 命令：</label>
+                            <div class="command-box">
+                                <code id="n-m3u8dl-command">N_m3u8DL-RE "{video_data.get('best_m3u8_url', '')}" --save-name "{video_data.get('title', 'video')}"</code>
+                                <button class="copy-btn" onclick="copyCommand('n-m3u8dl-command')">复制</button>
+                            </div>
+                        </div>
+                        <div class="command-item">
+                            <label>FFmpeg 命令：</label>
+                            <div class="command-box">
+                                <code id="ffmpeg-command">ffmpeg -i "{video_data.get('best_m3u8_url', '')}" -c copy "{video_data.get('title', 'video')}.mp4"</code>
+                                <button class="copy-btn" onclick="copyCommand('ffmpeg-command')">复制</button>
+                            </div>
+                        </div>
+                    </div>
+                        <div class="tool-links">
+                            <a href="https://github.com/yt-dlp/yt-dlp/releases" target="_blank" class="tool-link">下载 yt-dlp</a>
+                            <a href="https://github.com/nilaoda/N_m3u8DL-RE/releases" target="_blank" class="tool-link">下载 N_m3u8DL-RE</a>
+                            <a href="https://ffmpeg.org/download.html" target="_blank" class="tool-link">下载 FFmpeg</a>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="method-card">
+                    <h4>🧩 浏览器扩展</h4>
+                    <p>便捷：安装浏览器扩展后直接下载</p>
+                    <div class="method-content">
+                        <div class="extension-links">
+                            <a href="https://chrome.google.com/webstore/detail/video-downloader-plus/hkdmdpdhfaamhgaojpelccmeehpfljgf" target="_blank" class="extension-link">Video Downloader Plus</a>
+                            <a href="https://chrome.google.com/webstore/detail/stream-recorder/iogidnfllpdhagebkblkgbfijkbkjdmm" target="_blank" class="extension-link">Stream Recorder</a>
+                            <a href="https://chrome.google.com/webstore/detail/hls-downloader/apomkbibleoioihonaagahhkpalkdnhf" target="_blank" class="extension-link">HLS Downloader</a>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="method-card">
+                    <h4>📋 视频链接信息</h4>
+                    <p>复制链接到其他下载工具使用</p>
+                    <div class="method-content">
+                        <div class="m3u8-info">
+                            <div class="info-row">
+                                <label>高清质量链接：</label>
+                                <div class="url-box">
+                                    <input type="text" id="best-m3u8-url" value="{video_data.get('best_m3u8_url', '')}" readonly>
+                                    <button class="copy-btn" onclick="copyUrl('best-m3u8-url')">复制</button>
+                                </div>
+                            </div>
+                            <div class="info-row">
+                                <label>视频标题：</label>
+                                <div class="url-box">
+                                    <input type="text" id="video-title" value="{video_data.get('title', '')}" readonly>
+                                    <button class="copy-btn" onclick="copyUrl('video-title')">复制</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1553,26 +1861,154 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             }});
         }}
         
+        // 打开最佳质量视频
+        function openBestQualityVideo() {{
+            const bestUrl = '{video_data.get('best_m3u8_url', '')}';
+            if (bestUrl && bestUrl !== 'N/A' && bestUrl !== '') {{
+                window.open(bestUrl, '_blank');
+                console.log('打开最佳质量视频:', bestUrl);
+            }} else {{
+                alert('暂无可用的高清视频链接');
+            }}
+        }}
+        
         // 添加一些交互提示
         document.addEventListener('DOMContentLoaded', function() {{
-            const bestBtn = document.querySelector('.best-quality-btn');
             const qualityLinks = document.querySelectorAll('.quality-link');
-            
-            // 为最佳质量按钮添加点击提示
-            if (bestBtn) {{
-                bestBtn.addEventListener('click', function() {{
-                    // 可以在这里添加统计或其他逻辑
-                    console.log('打开最佳质量m3u8视频');
-                }});
-            }}
             
             // 为质量链接添加点击提示
             qualityLinks.forEach(function(link) {{
                 link.addEventListener('click', function() {{
-                    console.log('打开m3u8视频:', this.href);
+                    console.log('打开视频:', this.href);
                 }});
             }});
         }});
+        
+        // 在线下载相关功能
+        function openDownloadSite(siteUrl) {{
+            const m3u8Url = document.getElementById('best-m3u8-url').value;
+            if (m3u8Url && m3u8Url !== 'N/A' && m3u8Url !== '') {{
+                // 打开下载网站
+                window.open(siteUrl, '_blank');
+                
+                // 自动复制链接到剪贴板
+                copyToClipboard(m3u8Url);
+                showNotification('视频链接已复制到剪贴板，请在下载网站中粘贴链接');
+            }} else {{
+                showNotification('没有找到视频链接', 'error');
+            }}
+        }}
+        
+        function copyCommand(elementId) {{
+            const element = document.getElementById(elementId);
+            const text = element.textContent;
+            copyToClipboard(text);
+            
+            // 更改按钮状态
+            const btn = element.nextElementSibling;
+            btn.textContent = '已复制';
+            btn.classList.add('copied');
+            setTimeout(() => {{
+                btn.textContent = '复制';
+                btn.classList.remove('copied');
+            }}, 2000);
+        }}
+        
+        function copyUrl(elementId) {{
+            const element = document.getElementById(elementId);
+            const text = element.value;
+            copyToClipboard(text);
+            
+            // 更改按钮状态
+            const btn = element.nextElementSibling;
+            btn.textContent = '已复制';
+            btn.classList.add('copied');
+            setTimeout(() => {{
+                btn.textContent = '复制';
+                btn.classList.remove('copied');
+            }}, 2000);
+        }}
+        
+        function copyToClipboard(text) {{
+            if (navigator.clipboard && navigator.clipboard.writeText) {{
+                navigator.clipboard.writeText(text).then(() => {{
+                    console.log('复制成功');
+                }}).catch(err => {{
+                    console.error('复制失败:', err);
+                    fallbackCopyTextToClipboard(text);
+                }});
+            }} else {{
+                fallbackCopyTextToClipboard(text);
+            }}
+        }}
+        
+        function fallbackCopyTextToClipboard(text) {{
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.top = '0';
+            textArea.style.left = '0';
+            textArea.style.width = '2em';
+            textArea.style.height = '2em';
+            textArea.style.padding = '0';
+            textArea.style.border = 'none';
+            textArea.style.outline = 'none';
+            textArea.style.boxShadow = 'none';
+            textArea.style.background = 'transparent';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            
+            try {{
+                document.execCommand('copy');
+                console.log('后备复制成功');
+            }} catch (err) {{
+                console.error('后备复制失败:', err);
+            }}
+            
+            document.body.removeChild(textArea);
+        }}
+        
+        function showNotification(message, type = 'info') {{
+            // 创建通知元素
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 12px 20px;
+                background: ${{type === 'error' ? '#dc3545' : '#28a745'}};
+                color: white;
+                border-radius: 5px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                z-index: 10000;
+                max-width: 300px;
+                font-size: 14px;
+                opacity: 0;
+                transform: translateX(100%);
+                transition: all 0.3s ease;
+            `;
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            // 显示动画
+            setTimeout(() => {{
+                notification.style.opacity = '1';
+                notification.style.transform = 'translateX(0)';
+            }}, 100);
+            
+            // 自动隐藏
+            setTimeout(() => {{
+                notification.style.opacity = '0';
+                notification.style.transform = 'translateX(100%)';
+                setTimeout(() => {{
+                    if (notification.parentNode) {{
+                        notification.parentNode.removeChild(notification);
+                    }}
+                }}, 300);
+            }}, 3000);
+        }}
     </script>
 </body>
 </html>
@@ -1605,59 +2041,37 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         return links_html
     
     def process_video(self, video_data):
-        """处理单个视频"""
-        if not video_data or not video_data['viewkey']:
+        """处理单个视频 - 保存到数据库"""
+        if not video_data or not video_data.get('viewkey'):
             return False
         
         viewkey = video_data['viewkey']
-        # 获取app.py所在的目录
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
         
-        # 检查是否已存在且采集完成
+        # 检查是否已存在于数据库中
         if SCRAPER_CONFIG.get('skip_existing', True):
-            if self.is_video_completed(viewkey):
+            if self.db.video_exists(viewkey):
                 if DEBUG['verbose']:
-                    print(f"跳过已完成的视频: {video_data['title']}")
+                    print(f"跳过已存在的视频: {video_data.get('title', 'N/A')} (ID: {viewkey})")
                 return True
         
         if DEBUG['verbose']:
-            print(f"处理视频: {video_data['title']}")
-            print(f"文件夹: {folder_path}")
-        
-        # 创建文件夹
-        os.makedirs(folder_path, exist_ok=True)
+            print(f"处理视频: {video_data.get('title', 'N/A')} (ID: {viewkey})")
         
         try:
-            # 添加下载任务到队列
-            download_tasks = []
-            if video_data['thumbnail_url']:
-                thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
-                self.add_download_task(video_data['thumbnail_url'], thumbnail_path, "缩略图")
-                download_tasks.append(("缩略图", thumbnail_path))
+            # 保存视频数据到数据库
+            db_video_id = self.db.insert_video(video_data)
             
-            if video_data['preview_url']:
-                preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
-                self.add_download_task(video_data['preview_url'], preview_path, "预览视频")
-                download_tasks.append(("预览视频", preview_path))
-            
-            # 创建HTML页面
-            html_path = self.create_html_page(video_data, folder_path)
             if DEBUG['verbose']:
-                print(f"HTML页面创建成功: {html_path}")
-            
-            # 创建采集日志（初始状态）
-            self.create_collection_log(video_data, folder_path, success=False, error_msg="处理中...")
-            
-            # 立即更新日志为成功状态（因为HTML页面已创建）
-            self.create_collection_log(video_data, folder_path, success=True)
+                print(f"✓ 视频数据已保存到数据库 (DB ID: {db_video_id})")
             
             return True
             
         except Exception as e:
-            error_msg = f"处理视频时出错: {e}"
-            print(error_msg)
-            self.create_collection_log(video_data, folder_path, success=False, error_msg=error_msg)
+            error_msg = f"保存视频数据到数据库时出错: {e}"
+            print(f"❌ {error_msg}")
+            if DEBUG['verbose']:
+                import traceback
+                traceback.print_exc()
             return False
     
     def update_collection_logs(self, videos, download_results):
@@ -2351,15 +2765,10 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             if viewkey_match:
                 video_data['viewkey'] = viewkey_match.group(1)
             
-            # 提取缩略图
-            img_element = soup.find('img', class_='videoThumb')
-            if img_element:
-                video_data['thumbnail_url'] = img_element.get('src', '')
-            
-            # 提取预览视频
-            video_element = soup.find('video')
-            if video_element:
-                video_data['preview_url'] = video_element.get('src', '')
+            # 提取缩略图和预览视频 - 使用改进的方法
+            thumbnail_url, preview_url = self.extract_thumbnail_and_preview_urls(soup)
+            video_data['thumbnail_url'] = thumbnail_url
+            video_data['preview_url'] = preview_url
             
             # 提取时长
             duration_element = soup.find('span', class_='duration')
@@ -2588,15 +2997,10 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             if viewkey_match:
                 video_data['viewkey'] = viewkey_match.group(1)
             
-            # 提取缩略图
-            img_element = soup.find('img', class_='videoThumb')
-            if img_element:
-                video_data['thumbnail_url'] = img_element.get('src', '')
-            
-            # 提取预览视频
-            video_element = soup.find('video')
-            if video_element:
-                video_data['preview_url'] = video_element.get('src', '')
+            # 提取缩略图和预览视频 - 使用改进的方法
+            thumbnail_url, preview_url = self.extract_thumbnail_and_preview_urls(soup)
+            video_data['thumbnail_url'] = thumbnail_url
+            video_data['preview_url'] = preview_url
             
             # 提取时长
             duration_element = soup.find('span', class_='duration')
@@ -2903,7 +3307,11 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             print(f"🔗 总视频链接数: {len(video_urls)}")
             print(f"✅ 成功分析数: {len(analyzed_data)}")
             print(f"📈 成功率: {len(analyzed_data)/len(video_urls)*100:.1f}%")
-            print(f"📁 数据保存在: {os.path.abspath(OUTPUT_CONFIG['data_folder'])}")
+            print(f"📁 数据已保存到数据库: {self.db.db_path}")
+            
+            # 显示数据库统计信息
+            stats = self.db.get_statistics()
+            print(f"📊 数据库统计: 总视频 {stats['total_videos']} 个，分类 {stats['total_categories']} 个")
             
             return {
                 'video_urls': video_urls,
@@ -2926,6 +3334,161 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             if hasattr(self, 'download_workers') and self.download_workers:
                 self.stop_download_workers()
             return None
+
+    def extract_thumbnail_and_preview_urls(self, soup):
+        """
+        改进的缩略图和预览视频URL提取方法
+        """
+        thumbnail_url = ''
+        preview_url = ''
+        
+        # === 提取缩略图 ===
+        # 方法1：查找带有poster属性的video标签
+        video_with_poster = soup.find('video', attrs={'poster': True})
+        if video_with_poster and video_with_poster.get('poster'):
+            poster_url = video_with_poster.get('poster')
+            # 过滤掉base64占位符
+            if not poster_url.startswith('data:'):
+                thumbnail_url = poster_url
+                if DEBUG['verbose']:
+                    print(f"✓ 找到video poster缩略图: {thumbnail_url}")
+        
+        # 方法2：查找特定的缩略图img标签
+        if not thumbnail_url:
+            # 尝试不同的缩略图选择器
+            thumb_selectors = [
+                'img[data-poster]',
+                'img[data-thumb]',
+                'img[data-mediumthumb]',
+                'img.videoThumb',
+                'img[class*="thumb"]',
+                'img[src*="thumb"]'
+            ]
+            
+            for selector in thumb_selectors:
+                img_elements = soup.select(selector)
+                for img in img_elements:
+                    # 优先使用data属性
+                    url = img.get('data-poster') or img.get('data-thumb') or img.get('data-mediumthumb') or img.get('src')
+                    if url and ('thumb' in url.lower() or 'poster' in url.lower()):
+                        thumbnail_url = url
+                        if DEBUG['verbose']:
+                            print(f"✓ 找到img标签缩略图: {thumbnail_url}")
+                        break
+                if thumbnail_url:
+                    break
+        
+        # 方法3：从整个页面源码中提取缩略图URL
+        if not thumbnail_url:
+            # 直接在整个页面源码中搜索，不限于JavaScript
+            page_content = str(soup)
+            
+            # 查找常见的缩略图URL模式
+            thumb_patterns = [
+                r'"image":\s*"([^"]*\.jpg[^"]*)"',
+                r'"poster":\s*"([^"]*\.jpg[^"]*)"',
+                r'"thumbnail":\s*"([^"]*\.jpg[^"]*)"',
+                r'thumbUrl["\']:\s*["\']([^"\']*\.jpg[^"\']*)["\']',
+                r'"defaultThumb":\s*"([^"]*\.jpg[^"]*)"',
+                r'"thumb":\s*"([^"]*\.jpg[^"]*)"',
+                r'"image_url":\s*"([^"]*\.jpg[^"]*)"',
+                # 添加更多模式
+                r'data-original="([^"]*\.jpg[^"]*)"',
+                r'data-src="([^"]*\.jpg[^"]*)"',
+                r'data-mediumthumb="([^"]*\.jpg[^"]*)"',
+                r'data-thumb="([^"]*\.jpg[^"]*)"',
+                # 查找Pornhub特定的缩略图模式
+                r'https://[^"\']*phncdn\.com/[^"\']*\.jpg[^"\']*',
+                r'https://[^"\']*pornhubpremium\.com/[^"\']*\.jpg[^"\']*',
+                # 直接搜索完整的URL
+                r'https://ei\.phncdn\.com/videos/[^"\']*\.jpg[^"\']*'
+            ]
+            
+            for pattern in thumb_patterns:
+                matches = re.findall(pattern, page_content, re.IGNORECASE)
+                for match in matches:
+                    clean_url = match.replace('\\/', '/')
+                    # 更宽松的验证，不仅限于包含"thumb"的URL
+                    if (clean_url and len(clean_url) > 20 and 
+                        '.jpg' in clean_url.lower() and 
+                        ('phncdn.com' in clean_url or 'pornhub' in clean_url or 'thumb' in clean_url.lower()) and
+                        not clean_url.startswith('data:')):  # 排除base64编码的占位符
+                        thumbnail_url = clean_url
+                        if DEBUG['verbose']:
+                            print(f"✓ 从页面找到缩略图: {thumbnail_url}")
+                        break
+                if thumbnail_url:
+                    break
+        
+        # === 提取预览视频 ===
+        # 方法1：查找video标签及其source子标签
+        video_elements = soup.find_all('video')
+        for video in video_elements:
+            # 检查video标签的src属性
+            src = video.get('src', '')
+            if src and ('.webm' in src.lower() or '.mp4' in src.lower()) and 'preview' in src.lower():
+                preview_url = src
+                if DEBUG['verbose']:
+                    print(f"✓ 找到video标签预览: {preview_url}")
+                break
+            
+            # 检查source子标签
+            sources = video.find_all('source')
+            for source in sources:
+                src = source.get('src', '')
+                src_type = source.get('type', '').lower()
+                if src and ('webm' in src_type or '.webm' in src.lower() or 'preview' in src.lower()):
+                    preview_url = src
+                    if DEBUG['verbose']:
+                        print(f"✓ 找到source标签预览: {preview_url}")
+                    break
+            
+            if preview_url:
+                break
+        
+        # 方法2：从整个页面源码中提取预览视频URL
+        if not preview_url:
+            # 直接在整个页面源码中搜索，不限于JavaScript
+            page_content = str(soup)
+            
+            # 查找常见的预览视频URL模式
+            video_patterns = [
+                r'"preview":\s*"([^"]*\.webm[^"]*)"',
+                r'"videoPreview":\s*"([^"]*\.webm[^"]*)"',
+                r'"previewUrl":\s*"([^"]*\.webm[^"]*)"',
+                r'previewUrl["\']:\s*["\']([^"\']*\.webm[^"\']*)["\']',
+                r'"preview":\s*"([^"]*\.mp4[^"]*)"',
+                r'"preview_url":\s*"([^"]*\.webm[^"]*)"',
+                # 添加更多模式
+                r'data-mediabook="([^"]*\.webm[^"]*)"',
+                r'data-preview="([^"]*\.webm[^"]*)"',
+                r'data-video-preview="([^"]*\.webm[^"]*)"',
+                # 查找Pornhub特定的预览视频模式
+                r'https://[^"\']*phncdn\.com/[^"\']*\.webm[^"\']*',
+                r'https://[^"\']*pornhubpremium\.com/[^"\']*\.webm[^"\']*',
+                # 直接搜索完整的预览视频URL
+                r'https://ew\.phncdn\.com/[^"\']*\.webm[^"\']*'
+            ]
+            
+            for pattern in video_patterns:
+                matches = re.findall(pattern, page_content, re.IGNORECASE)
+                for match in matches:
+                    clean_url = match.replace('\\/', '/')
+                    # 解码HTML实体
+                    import html
+                    clean_url = html.unescape(clean_url)
+                    # 更宽松的验证
+                    if (clean_url and len(clean_url) > 20 and 
+                        ('.webm' in clean_url.lower() or '.mp4' in clean_url.lower()) and 
+                        ('phncdn.com' in clean_url or 'pornhub' in clean_url or 'preview' in clean_url.lower())):
+                        preview_url = clean_url
+                        if DEBUG['verbose']:
+                            print(f"✓ 从页面找到预览视频: {preview_url}")
+                        break
+                if preview_url:
+                    break
+        
+        return thumbnail_url, preview_url
 
 def main():
     """主函数 - 支持命令行参数"""

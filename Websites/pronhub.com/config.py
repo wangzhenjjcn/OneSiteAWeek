@@ -87,7 +87,7 @@ DETAIL_PAGE_CONFIG = {
 
 # 调试设置
 DEBUG = {
-    'verbose': False,     # 详细输出（默认关闭）
+    'verbose': False,     # 详细输出（关闭以减少日志）
     'save_raw_html': False,  # 保存原始HTML
     'test_mode': False,   # 测试模式
 } 
