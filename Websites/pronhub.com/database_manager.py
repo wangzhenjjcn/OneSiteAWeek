@@ -5,7 +5,16 @@ import sqlite3
 import os
 import json
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+
+# 简化类型提示，避免导入问题
+try:
+    from typing import Dict, List, Optional, Any
+except ImportError:
+    # 如果typing不可用，定义简单的替代
+    Dict = dict
+    List = list
+    Optional = lambda x: x
+    Any = object
 
 class DatabaseManager:
     """视频数据库管理器"""
