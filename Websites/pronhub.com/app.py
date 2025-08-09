@@ -2409,25 +2409,69 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         return links_html
     
     def process_video(self, video_data):
-        """处理单个视频 - 保存到数据库"""
+        """处理单个视频 - 保存到数据库并创建文件"""
         if not video_data or not video_data.get('viewkey'):
             return False
         
         viewkey = video_data['viewkey']
+        # 获取app.py所在的目录
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        folder_path = os.path.join(script_dir, OUTPUT_CONFIG['data_folder'], viewkey)
         
-        # 检查是否已存在于数据库中
+        # 检查是否已存在（优先检查本地文件，只有本地和数据库都存在才跳过）
         if SCRAPER_CONFIG.get('skip_existing', True):
-            if self.db.video_exists(viewkey):
-                if DEBUG['verbose']:
-                    print(f"跳过已存在的视频: {video_data.get('title', 'N/A')} (ID: {viewkey})")
-                return True
+            # 检查本地文件是否存在
+            file_exists = self.is_video_completed(viewkey)
+            
+            if file_exists:
+                # 本地文件存在，再检查数据库中是否也存在
+                db_exists = self.db.video_exists(viewkey)
+                
+                if db_exists:
+                    # 本地文件和数据库都存在，才跳过
+                    if DEBUG['verbose']:
+                        print(f"跳过已存在的视频 (本地+数据库): {video_data.get('title', 'N/A')} (ID: {viewkey})")
+                    return True
+                else:
+                    # 本地文件存在但数据库不存在，不跳过，重新处理以补充数据库
+                    if DEBUG['verbose']:
+                        print(f"本地文件存在但数据库缺失，重新处理: {video_data.get('title', 'N/A')} (ID: {viewkey})")
+            # 本地文件不存在，不跳过，继续处理
         
         if DEBUG['verbose']:
             print(f"处理视频: {video_data.get('title', 'N/A')} (ID: {viewkey})")
+            print(f"文件夹: {folder_path}")
+        
+        # 创建文件夹
+        os.makedirs(folder_path, exist_ok=True)
         
         try:
-            # 保存视频数据到数据库
+            # 1. 保存视频数据到数据库
             db_video_id = self.db.insert_video(video_data)
+            
+            # 启动下载工作线程（如果还没启动）
+            if not hasattr(self, 'download_workers') or not self.download_workers:
+                self.start_download_workers()
+            
+            # 2. 添加下载任务到队列
+            download_tasks = []
+            if video_data.get('thumbnail_url'):
+                thumbnail_path = os.path.join(folder_path, OUTPUT_CONFIG['thumbnail_filename'])
+                self.add_download_task(video_data['thumbnail_url'], thumbnail_path, "缩略图")
+                download_tasks.append(("缩略图", thumbnail_path))
+            
+            if video_data.get('preview_url'):
+                preview_path = os.path.join(folder_path, OUTPUT_CONFIG['preview_filename'])
+                self.add_download_task(video_data['preview_url'], preview_path, "预览视频")
+                download_tasks.append(("预览视频", preview_path))
+            
+            # 3. 创建HTML页面
+            html_path = self.create_html_page(video_data, folder_path)
+            if DEBUG['verbose']:
+                print(f"HTML页面创建成功: {html_path}")
+            
+            # 4. 创建采集日志
+            self.create_collection_log(video_data, folder_path, success=True)
             
             if DEBUG['verbose']:
                 print(f"✓ 视频数据已保存到数据库 (DB ID: {db_video_id})")
@@ -2435,8 +2479,9 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             return True
             
         except Exception as e:
-            error_msg = f"保存视频数据到数据库时出错: {e}"
+            error_msg = f"处理视频时出错: {e}"
             print(f"❌ {error_msg}")
+            self.create_collection_log(video_data, folder_path, success=False, error_msg=error_msg)
             if DEBUG['verbose']:
                 import traceback
                 traceback.print_exc()
@@ -3061,6 +3106,103 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             # 使用Selenium多标签页方式
             return self.analyze_video_urls_with_selenium_tabs(video_urls, max_workers)
     
+    def extract_video_metadata(self, soup, video_url):
+        """提取视频元数据（时长、上传者、观看次数、发布时间等）"""
+        import re
+        
+        video_data = {
+            'video_id': '',
+            'viewkey': '',
+            'title': '',
+            'video_url': video_url,
+            'duration': '',
+            'uploader': '',
+            'views': '',
+            'publish_time': '',
+            'categories': [],
+            'thumbnail_url': '',
+            'preview_url': '',
+            'best_m3u8_url': '',
+            'm3u8_urls': []
+        }
+        
+        # 从URL提取viewkey
+        viewkey_match = re.search(r'viewkey=([^&]+)', video_url)
+        if viewkey_match:
+            video_data['viewkey'] = viewkey_match.group(1)
+            video_data['video_id'] = viewkey_match.group(1)
+        
+        # 提取标题
+        title_element = soup.find('title')
+        if title_element:
+            video_data['title'] = title_element.get_text(strip=True)
+            # 清理标题
+            for suffix in [' - Pornhub.com', ' - PornHub', ' | Pornhub']:
+                video_data['title'] = video_data['title'].replace(suffix, '')
+        
+        # 提取时长 - 尝试多种选择器
+        duration_element = (soup.find('span', class_='duration') or 
+                          soup.find('span', {'class': 'runtime'}) or 
+                          soup.find('span', {'data-role': 'duration'}) or
+                          soup.find('div', class_='duration'))
+        if duration_element:
+            video_data['duration'] = duration_element.get_text(strip=True)
+        else:
+            # 从脚本中提取时长
+            duration_match = re.search(r'"duration"[:\s]*"([^"]+)"', str(soup))
+            if not duration_match:
+                duration_match = re.search(r'"runtime"[:\s]*"([^"]+)"', str(soup))
+            if duration_match:
+                video_data['duration'] = duration_match.group(1)
+        
+        # 提取上传者 - 尝试多种选择器
+        uploader_element = (soup.find('a', class_='username') or 
+                          soup.find('a', class_='usernameLink') or 
+                          soup.find('span', class_='username') or
+                          soup.find('div', class_='usernameBadgesWrapper') or
+                          soup.find('a', {'data-qa': 'user-name'}))
+        if uploader_element:
+            video_data['uploader'] = uploader_element.get_text(strip=True)
+        else:
+            # 从脚本中提取上传者
+            uploader_match = re.search(r'"uploader"[:\s]*"([^"]+)"', str(soup))
+            if not uploader_match:
+                uploader_match = re.search(r'"author"[:\s]*"([^"]+)"', str(soup))
+            if uploader_match:
+                video_data['uploader'] = uploader_match.group(1)
+        
+        # 提取观看次数 - 尝试多种选择器
+        views_element = (soup.find('span', class_='views') or 
+                       soup.find('span', class_='count') or
+                       soup.find('div', class_='views') or
+                       soup.find('span', {'data-qa': 'view-count'}))
+        if views_element:
+            video_data['views'] = views_element.get_text(strip=True)
+        else:
+            # 从脚本中提取观看次数
+            views_match = re.search(r'"views"[:\s]*"([^"]+)"', str(soup))
+            if not views_match:
+                views_match = re.search(r'"viewCount"[:\s]*(\d+)', str(soup))
+            if views_match:
+                video_data['views'] = views_match.group(1)
+        
+        # 提取发布时间 - 尝试多种选择器
+        publish_element = (soup.find('span', class_='publishDate') or 
+                         soup.find('time') or
+                         soup.find('span', class_='added') or
+                         soup.find('div', class_='date'))
+        if publish_element:
+            video_data['publish_time'] = publish_element.get_text(strip=True)
+        else:
+            # 从脚本中提取发布时间
+            publish_match = re.search(r'"publishDate"[:\s]*"([^"]+)"', str(soup))
+            if not publish_match:
+                publish_match = re.search(r'"datePublished"[:\s]*"([^"]+)"', str(soup))
+            if publish_match:
+                video_data['publish_time'] = publish_match.group(1)
+        
+        return video_data
+
     def analyze_video_urls_with_requests(self, video_urls, max_workers=10):
         """使用requests多线程分析视频URL"""
         print("使用requests方式分析视频URL...")
