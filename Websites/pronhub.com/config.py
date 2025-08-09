@@ -34,12 +34,12 @@ BASE_URL = "https://cn.pornhub.com/language/chinese"
 SCRAPER_CONFIG = {
     'start_page': 1,      # 开始页数
     'end_page': 5,        # 结束页数（当auto_detect_last=True时会被忽略）
-    'delay_min': 1,       # 最小延迟秒数
-    'delay_max': 3,       # 最大延迟秒数
-    'timeout': 30,        # 请求超时时间
-    'max_retries': 5,     # 最大重试次数（增加到5次）
+    'delay_min': 2,       # 最小延迟秒数（增加以减少请求频率）
+    'delay_max': 5,       # 最大延迟秒数（增加以减少请求频率）
+    'timeout': 60,        # 请求超时时间（增加到60秒）
+    'max_retries': 3,     # 最大重试次数（减少到3次）
     'verify_ssl': False,  # 是否验证SSL证书
-    'download_threads': 30,  # 下载线程数（增加到30个）
+    'download_threads': 10,  # 下载线程数（减少到10个以减少并发）
     'auto_detect_last': True,  # 是否自动检测最后一页
     'skip_existing': True,  # 是否跳过已存在的ID
     'show_worker_info': False,  # 是否显示工作线程信息
@@ -81,8 +81,8 @@ SELENIUM_CONFIG = {
 # 详情页面获取方式设置
 DETAIL_PAGE_CONFIG = {
     'use_requests': True,  # True: 使用requests方式（更稳定）, False: 使用Selenium多标签页方式（更快但不稳定）
-    'max_workers_requests': 10,  # requests方式的最大线程数
-    'max_workers_selenium': 3,   # selenium方式的最大线程数（减少以提高稳定性）
+    'max_workers_requests': 5,  # requests方式的最大线程数（减少以减少并发）
+    'max_workers_selenium': 2,   # selenium方式的最大线程数（进一步减少以提高稳定性）
 }
 
 # 调试设置
