@@ -56,10 +56,15 @@ class DatabaseManager:
             
             # 设置数据库文件路径
             self.db_path = os.path.join(database_dir, 'pornhub_videos.db')
+            self.html_db_path = os.path.join(database_dir, 'pornhub.com.html.db')
         else:
             self.db_path = db_path
+            # HTML数据库路径
+            db_dir = os.path.dirname(db_path)
+            self.html_db_path = os.path.join(db_dir, 'pornhub.com.html.db')
             
         self.init_database()
+        self.init_html_database()
     
     def init_database(self):
         """初始化数据库表结构"""
@@ -126,6 +131,112 @@ class DatabaseManager:
             conn.commit()
             print(f"✓ 数据库初始化完成: {self.db_path}")
     
+    def init_html_database(self):
+        """初始化HTML数据库表结构"""
+        with sqlite3.connect(self.html_db_path) as conn:
+            cursor = conn.cursor()
+            
+            # 创建HTML页面表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS html_pages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT UNIQUE NOT NULL,               -- 页面URL (唯一)
+                    html_content TEXT NOT NULL,             -- HTML源码
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,  -- 采集时间
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP   -- 更新时间
+                )
+            ''')
+            
+            # 创建索引以提高查询性能
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_html_pages_url ON html_pages(url)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_html_pages_created_at ON html_pages(created_at)')
+            
+            conn.commit()
+            print(f"✓ HTML数据库初始化完成: {self.html_db_path}")
+    
+    def insert_html_page(self, url, html_content):
+        """插入或更新HTML页面数据
+        
+        Args:
+            url: 页面URL
+            html_content: HTML源码
+            
+        Returns:
+            int: 插入的HTML页面ID
+        """
+        try:
+            with sqlite3.connect(self.html_db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 插入或更新HTML页面
+                cursor.execute('''
+                    INSERT OR REPLACE INTO html_pages (url, html_content, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (url, html_content))
+                
+                html_id = cursor.lastrowid
+                conn.commit()
+                
+                if DEBUG.get('verbose', False):
+                    print(f"✓ HTML页面已保存: {url} (ID: {html_id})")
+                
+                return html_id
+                
+        except Exception as e:
+            print(f"❌ 保存HTML页面失败: {e}")
+            raise
+    
+    def get_html_page(self, url):
+        """获取HTML页面数据
+        
+        Args:
+            url: 页面URL
+            
+        Returns:
+            dict: HTML页面数据，如果不存在返回None
+        """
+        try:
+            with sqlite3.connect(self.html_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT * FROM html_pages WHERE url = ?
+                ''', (url,))
+                
+                row = cursor.fetchone()
+                return dict(row) if row else None
+                
+        except Exception as e:
+            print(f"❌ 获取HTML页面失败: {e}")
+            return None
+    
+    def get_all_html_pages(self, limit=None):
+        """获取所有HTML页面数据
+        
+        Args:
+            limit: 限制返回数量
+            
+        Returns:
+            list: HTML页面数据列表
+        """
+        try:
+            with sqlite3.connect(self.html_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                query = 'SELECT * FROM html_pages ORDER BY created_at DESC'
+                if limit:
+                    query += f' LIMIT {limit}'
+                
+                cursor.execute(query)
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            print(f"❌ 获取HTML页面列表失败: {e}")
+            return []
+
     def insert_video(self, video_data):
         """插入视频数据
         
@@ -1651,25 +1762,37 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
     <title>{video_data['title']}</title>
 
     <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
         body {{
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
             padding: 20px;
-            background-color: #f5f5f5;
         }}
         .video-container {{
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
         }}
         .video-title {{
-            font-size: 24px;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 15px;
+            font-size: 28px;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 25px;
+            text-align: center;
+            line-height: 1.3;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }}
         .video-info {{
             display: flex;
@@ -1688,65 +1811,104 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         .thumbnail {{
             text-align: center;
             position: relative;
-            width: 570px;
-            height: 320px;
+            width: 600px;
+            height: 337px;
             margin: 0 auto;
             overflow: hidden;
-            border-radius: 8px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }}
+        .thumbnail:hover {{
+            transform: translateY(-5px);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
         }}
         .thumbnail img {{
-            width: 570px;
-            height: 320px;
+            width: 600px;
+            height: 337px;
             object-fit: cover;
-            border-radius: 8px;
+            border-radius: 16px;
             cursor: pointer;
-            transition: opacity 0.3s ease;
+            transition: opacity 0.3s ease, transform 0.3s ease;
         }}
         .thumbnail:hover img {{
             opacity: 0;
-        }}
-        .thumbnail {{
-            position: relative;
+            transform: scale(1.05);
         }}
         .thumbnail:hover::after {{
             content: "🎬 点击观看视频";
             position: absolute;
-            top: 50%;
+            top: 25%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.8);
+            background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 14px;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: 600;
             pointer-events: none;
             z-index: 10;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            animation: pulse 2s infinite;
+        }}
+        @keyframes pulse {{
+            0% {{ transform: translate(-50%, -50%) scale(1); }}
+            50% {{ transform: translate(-50%, -50%) scale(1.05); }}
+            100% {{ transform: translate(-50%, -50%) scale(1); }}
         }}
         .info-details {{
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 15px 20px;
+            gap: 20px 30px;
             align-items: start;
+            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.05);
         }}
         @media (max-width: 768px) {{
             .info-details {{
                 grid-template-columns: 1fr;
-                gap: 10px;
+                gap: 15px;
+                padding: 20px;
+            }}
+            .thumbnail {{
+                width: 100%;
+                height: auto;
+                aspect-ratio: 16/9;
+            }}
+            .thumbnail img {{
+                width: 100%;
+                height: 100%;
             }}
         }}
         .info-item {{
             display: flex;
             flex-direction: column;
-            gap: 5px;
+            gap: 8px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 12px;
+            border-left: 4px solid #667eea;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }}
+        .info-item:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
         }}
         .info-label {{
-            font-weight: bold;
-            color: #666;
-            font-size: 14px;
+            font-weight: 600;
+            color: #495057;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }}
         .info-value {{
-            color: #333;
+            color: #2c3e50;
             word-wrap: break-word;
+            font-size: 15px;
+            font-weight: 500;
         }}
         .truncated-link {{
             color: #007bff;
@@ -1777,72 +1939,87 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         }}
 
         .download-links {{
-            margin-top: 20px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
+            margin-top: 30px;
+            padding: 25px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+        }}
+        .download-links h3 {{
+            color: white;
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 20px;
+            font-weight: 600;
         }}
         .download-links a {{
             display: inline-block;
-            margin: 5px 10px 5px 0;
-            padding: 8px 15px;
-            background: #007bff;
-            color: white;
+            margin: 8px;
+            padding: 12px 20px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #2c3e50;
             text-decoration: none;
-            border-radius: 5px;
-            transition: background 0.3s;
+            border-radius: 25px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
         }}
         .download-links a:hover {{
-            background: #0056b3;
+            background: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }}
         .download-items {{
-            margin-bottom: 15px;
+            margin-bottom: 20px;
             text-align: center;
         }}
         .quality-section {{
-            margin-top: 15px;
-            padding: 15px;
-            background: white;
-            border-radius: 8px;
-            border: 1px solid #dee2e6;
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            backdrop-filter: blur(5px);
         }}
         .quality-section h4 {{
-            margin-bottom: 10px;
-            color: #495057;
-            font-size: 14px;
+            margin-bottom: 15px;
+            color: #2c3e50;
+            font-size: 16px;
             text-align: center;
+            font-weight: 600;
         }}
         .quality-links {{
             display: flex;
             flex-wrap: wrap;
-            gap: 8px;
+            gap: 10px;
             justify-content: center;
         }}
         .quality-link {{
             display: inline-block;
-            padding: 6px 12px;
-            background: #28a745;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #28a745, #20c997);
             color: white;
             text-decoration: none;
-            border-radius: 4px;
-            font-size: 12px;
-            transition: background 0.3s;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
         }}
         .quality-link:hover {{
-            background: #1e7e34;
-            color: white;
-            text-decoration: none;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(40, 167, 69, 0.5);
         }}
         .hover-video {{
             position: absolute;
             top: 0;
             left: 0;
-            width: 570px;
-            height: 320px;
+            width: 600px;
+            height: 337px;
             object-fit: cover;
             opacity: 0;
             transition: opacity 0.3s ease;
-            border-radius: 8px;
+            border-radius: 16px;
             pointer-events: none;
         }}
         .thumbnail:hover .hover-video {{
@@ -3136,6 +3313,155 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             # 使用Selenium多标签页方式
             return self.analyze_video_urls_with_selenium_tabs(video_urls, max_workers)
     
+    def regenerate_data_from_html_db(self, limit=None, update_existing=False):
+        """从HTML数据库重新生成data目录和更新视频数据库
+        
+        Args:
+            limit: 限制处理的HTML页面数量
+            update_existing: 是否更新已存在的视频数据
+            
+        Returns:
+            dict: 处理结果统计
+        """
+        print("🔄 开始从HTML数据库重新生成data目录...")
+        
+        # 获取所有HTML页面
+        html_pages = self.db.get_all_html_pages(limit)
+        
+        if not html_pages:
+            print("❌ HTML数据库中没有找到页面数据")
+            return {'success': 0, 'failed': 0, 'skipped': 0}
+        
+        print(f"📊 找到 {len(html_pages)} 个HTML页面")
+        
+        # 启动下载工作线程
+        if not hasattr(self, 'download_workers') or not self.download_workers:
+            self.start_download_workers()
+        
+        success_count = 0
+        failed_count = 0
+        skipped_count = 0
+        
+        for i, html_page in enumerate(html_pages, 1):
+            url = html_page['url']
+            html_content = html_page['html_content']
+            
+            print(f"🔄 处理页面 {i}/{len(html_pages)}: {url}")
+            
+            try:
+                # 从URL提取viewkey
+                import re
+                viewkey_match = re.search(r'viewkey=([^&]+)', url)
+                if not viewkey_match:
+                    print(f"⚠️ 无法从URL提取viewkey: {url}")
+                    failed_count += 1
+                    continue
+                
+                viewkey = viewkey_match.group(1)
+                
+                # 检查是否需要跳过
+                if not update_existing:
+                    # 检查视频是否已存在且文件完整
+                    if self.db.video_exists(viewkey) and self.is_video_completed(viewkey):
+                        print(f"⏭️ 跳过已存在的视频: {viewkey}")
+                        skipped_count += 1
+                        continue
+                
+                # 解析HTML内容
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # 使用现有的提取函数获取视频数据
+                video_data = self.extract_video_metadata(soup, url)
+                
+                # 提取缩略图和预览视频URL
+                thumbnail_url, preview_url = self.extract_thumbnail_and_preview_urls(soup)
+                video_data['thumbnail_url'] = thumbnail_url
+                video_data['preview_url'] = preview_url
+                
+                # 提取M3U8地址
+                m3u8_urls = []
+                scripts = soup.find_all('script')
+                for script in scripts:
+                    script_content = script.string
+                    if script_content:
+                        m3u8_patterns = [
+                            r'https?://[^"\']*\.m3u8[^"\']*',
+                            r'"videoUrl":"([^"]*\.m3u8[^"]*)"',
+                            r"'videoUrl':'([^']*\.m3u8[^']*)'",
+                        ]
+                        
+                        for pattern in m3u8_patterns:
+                            matches = re.findall(pattern, script_content, re.IGNORECASE)
+                            for match in matches:
+                                if isinstance(match, tuple):
+                                    match = match[0]
+                                if match and match not in m3u8_urls:
+                                    clean_url = match.replace('\\/', '/')
+                                    m3u8_urls.append(clean_url)
+                
+                video_data['m3u8_urls'] = m3u8_urls
+                
+                # 选择最佳m3u8地址
+                if m3u8_urls:
+                    # 优先选择1080P，然后是720P
+                    best_m3u8 = None
+                    for quality in ['1080P', '720P', '480P', '240P']:
+                        for url in m3u8_urls:
+                            if quality in url:
+                                best_m3u8 = url
+                                break
+                        if best_m3u8:
+                            break
+                    
+                    if not best_m3u8:
+                        best_m3u8 = m3u8_urls[0]
+                    
+                    video_data['best_m3u8_url'] = best_m3u8
+                
+                # 设置兼容字段
+                video_data['url'] = url
+                video_data['alt_text'] = ''
+                
+                # 处理视频（保存到数据库和创建文件）
+                success = self.process_video(video_data)
+                
+                if success:
+                    success_count += 1
+                    print(f"✅ 成功处理: {video_data.get('title', 'N/A')} (ID: {viewkey})")
+                else:
+                    failed_count += 1
+                    print(f"❌ 处理失败: {viewkey}")
+                    
+            except Exception as e:
+                failed_count += 1
+                print(f"❌ 处理页面失败 {url}: {e}")
+                if DEBUG.get('verbose', False):
+                    import traceback
+                    traceback.print_exc()
+        
+        # 等待下载完成
+        print("⏳ 等待下载队列完成...")
+        self.wait_for_downloads()
+        
+        # 停止下载工作线程
+        self.stop_download_workers()
+        
+        result = {
+            'success': success_count,
+            'failed': failed_count,
+            'skipped': skipped_count,
+            'total': len(html_pages)
+        }
+        
+        print(f"\n🎉 重新生成完成!")
+        print(f"📊 处理统计:")
+        print(f"  - 成功: {success_count}")
+        print(f"  - 失败: {failed_count}")
+        print(f"  - 跳过: {skipped_count}")
+        print(f"  - 总计: {len(html_pages)}")
+        
+        return result
+    
     def extract_video_metadata(self, soup, video_url):
         """提取视频元数据（时长、上传者、观看次数、发布时间等）"""
         import re
@@ -3231,6 +3557,91 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             if publish_match:
                 video_data['publish_time'] = publish_match.group(1)
         
+        # 提取分类 - 尝试多种选择器
+        categories = []
+        # 尝试多种分类选择器
+        category_selectors = [
+            'a.category',           # 常见的分类链接
+            'a[href*="/categories/"]',  # 包含categories路径的链接
+            '.category-link',       # 分类链接class
+            '.categoriesWrapper a', # 分类包装器内的链接
+            '.video-categories a',  # 视频分类容器内的链接
+            '.tags a',              # 标签链接
+            'a[data-type="category"]', # 带有data-type的分类链接
+            '.tagsContainer a',     # 标签容器内的链接
+            '.video-tags a',        # 视频标签链接
+            'a.tag',                # 标签链接
+        ]
+        
+        if DEBUG.get('verbose', False):
+            print(f"开始提取分类，视频URL: {video_url}")
+        
+        for i, selector in enumerate(category_selectors):
+            try:
+                elements = soup.select(selector)
+                
+                if DEBUG.get('verbose', False):
+                    print(f"选择器 {i+1} '{selector}': 找到 {len(elements)} 个元素")
+                
+                for element in elements:
+                    if element and element.get_text(strip=True):
+                        category_text = element.get_text(strip=True)
+                        href = element.get('href', '')
+                        
+                        if DEBUG.get('verbose', False):
+                            print(f"  - 候选分类: '{category_text}' -> '{href}'")
+                        
+                        # 过滤掉非分类的链接
+                        if (category_text and 
+                            len(category_text) < 50 and  # 分类名通常不会太长
+                            not any(skip in category_text.lower() for skip in ['pornhub', 'premium', 'upload', 'login', 'register', 'contact', 'view', 'watch', 'home', 'browse', 'faq', '常见问题', '信任', '安全', 'help', 'support', '视频']) and
+                            '/categories/' in href):  # 确保是真正的分类链接
+                            categories.append({
+                                'name': category_text,
+                                'url': href
+                            })
+                            if DEBUG.get('verbose', False):
+                                print(f"    ✓ 已添加分类: '{category_text}'")
+                
+                # 如果找到分类就停止搜索
+                if categories:
+                    if DEBUG.get('verbose', False):
+                        print(f"找到 {len(categories)} 个分类，停止搜索")
+                    break
+            except Exception as e:
+                if DEBUG.get('verbose', False):
+                    print(f"选择器 '{selector}' 出错: {e}")
+                continue
+        
+        # 如果还是没找到，尝试从脚本中提取
+        if not categories:
+            try:
+                # 从JavaScript中查找分类信息
+                category_patterns = [
+                    r'"categories":\s*\[([^\]]+)\]',
+                    r'"category":\s*"([^"]+)"',
+                    r'"tags":\s*\[([^\]]+)\]',
+                ]
+                
+                for pattern in category_patterns:
+                    matches = re.search(pattern, str(soup))
+                    if matches:
+                        category_text = matches.group(1)
+                        if '"' in category_text:
+                            # 提取引号内的内容
+                            cat_names = re.findall(r'"([^"]+)"', category_text)
+                            for name in cat_names:
+                                if name and len(name) < 50:
+                                    categories.append({
+                                        'name': name,
+                                        'url': ''
+                                    })
+                        break
+            except Exception:
+                pass
+        
+        video_data['categories'] = categories
+        
         return video_data
 
     def analyze_video_urls_with_requests(self, video_urls, max_workers=10):
@@ -3273,6 +3684,13 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             if not page_source:
                 return None
             
+            # 保存HTML源码到数据库
+            try:
+                self.db.insert_html_page(video_url, page_source)
+            except Exception as e:
+                if DEBUG.get('verbose', False):
+                    print(f"保存HTML源码失败: {e}")
+            
             # 解析视频详细信息
             soup = BeautifulSoup(page_source, 'html.parser')
             
@@ -3288,15 +3706,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             video_data['thumbnail_url'] = thumbnail_url
             video_data['preview_url'] = preview_url
             
-            # 提取分类
-            categories = []
-            category_elements = soup.find_all('a', class_='category')
-            for cat in category_elements:
-                categories.append({
-                    'name': cat.get_text(strip=True),
-                    'url': cat.get('href', '')
-                })
-            video_data['categories'] = categories
+            # 分类已在extract_video_metadata中提取，无需重复
             
             # 提取m3u8地址
             m3u8_urls = []
@@ -3454,6 +3864,14 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                     except:
                         pass
                     return None
+                
+                # 保存HTML源码到数据库
+                try:
+                    self.db.insert_html_page(video_url, page_source)
+                except Exception as e:
+                    if DEBUG.get('verbose', False):
+                        print(f"保存HTML源码失败: {e}")
+                        
             except Exception as e:
                 print(f"获取页面源码失败 {video_url}: {e}")
                 # 关闭当前标签页并返回
@@ -3479,15 +3897,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             video_data['thumbnail_url'] = thumbnail_url
             video_data['preview_url'] = preview_url
             
-            # 提取分类
-            categories = []
-            category_elements = soup.find_all('a', class_='category')
-            for cat in category_elements:
-                categories.append({
-                    'name': cat.get_text(strip=True),
-                    'url': cat.get('href', '')
-                })
-            video_data['categories'] = categories
+            # 分类已在extract_video_metadata中提取，无需重复
             
             # 提取m3u8地址
             m3u8_urls = []
@@ -3963,6 +4373,22 @@ def show_database_stats():
     print(f"总分类数: {stats['total_categories']}")
     print(f"最新采集时间: {stats['latest_collection']}")
     
+    # HTML数据库统计
+    try:
+        import sqlite3
+        with sqlite3.connect(db.html_db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM html_pages')
+            html_count = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT MAX(created_at) FROM html_pages')
+            latest_html = cursor.fetchone()[0]
+            
+            print(f"总HTML页面数: {html_count}")
+            print(f"最新HTML采集: {latest_html or 'N/A'}")
+    except Exception as e:
+        print(f"HTML数据库统计失败: {e}")
+    
     if stats['top_uploaders']:
         print(f"\n🔥 热门上传者 (前10):")
         for i, uploader in enumerate(stats['top_uploaders'][:10], 1):
@@ -4023,8 +4449,8 @@ def main():
     """主函数 - 支持命令行参数和数据库查询"""
     import sys
     
-    # 检查是否是数据库查询命令
-    if len(sys.argv) > 1 and sys.argv[1] in ['--stats', '--search', '--recent', '--export']:
+    # 检查是否是数据库查询命令或重新生成命令
+    if len(sys.argv) > 1 and sys.argv[1] in ['--stats', '--search', '--recent', '--export', '--regenerate']:
         command = sys.argv[1]
         
         if command == '--stats':
@@ -4049,6 +4475,30 @@ def main():
             output_file = sys.argv[2]
             limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
             export_database_data(output_file, limit)
+            return
+        elif command == '--regenerate':
+            print("🔄 从HTML数据库重新生成data目录...")
+            limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+            update_existing = '--update' in sys.argv
+            
+            scraper = PornhubScraper()
+            try:
+                result = scraper.regenerate_data_from_html_db(limit=limit, update_existing=update_existing)
+                
+                print(f"\n✅ 重新生成完成!")
+                print(f"📊 处理统计:")
+                print(f"  - 成功处理: {result['success']}")
+                print(f"  - 处理失败: {result['failed']}")
+                print(f"  - 跳过: {result['skipped']}")
+                print(f"  - 总计: {result['total']}")
+                
+            except Exception as e:
+                print(f"❌ 重新生成失败: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                scraper.close_driver()
+            
             return
     
     # 解析命令行参数（采集功能）
