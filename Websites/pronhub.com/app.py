@@ -1742,6 +1742,14 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         m3u8_urls = video_data.get('m3u8_urls', [])
         best_m3u8_url = video_data.get('best_m3u8_url', '')
         
+        # 生成分类标签HTML
+        categories_html = ""
+        if video_data.get('categories'):
+            categories_tags = ''.join([f'<span class="category-tag">{cat["name"]}</span>' for cat in video_data.get("categories", [])])
+            categories_html = f'<div class="categories-list">{categories_tags}</div>'
+        else:
+            categories_html = 'N/A'
+        
         # 生成质量链接HTML (用于下载链接区域)
         quality_links_html = ""
         if m3u8_urls:
@@ -1860,18 +1868,23 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         .info-details {{
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 20px 30px;
-            align-items: start;
+            gap: 20px;
+            align-items: stretch;
             background: linear-gradient(135deg, #f8f9fa, #e9ecef);
             padding: 25px;
             border-radius: 15px;
             box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.05);
         }}
-        @media (max-width: 768px) {{
+        @media (max-width: 1200px) {{
             .info-details {{
                 grid-template-columns: 1fr;
                 gap: 15px;
+            }}
+        }}
+        @media (max-width: 768px) {{
+            .info-details {{
                 padding: 20px;
+                gap: 12px;
             }}
             .thumbnail {{
                 width: 100%;
@@ -1888,10 +1901,12 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             flex-direction: column;
             gap: 8px;
             padding: 15px;
-            background: rgba(255, 255, 255, 0.7);
+            background: rgba(255, 255, 255, 0.8);
             border-radius: 12px;
             border-left: 4px solid #667eea;
             transition: transform 0.2s ease, box-shadow 0.2s ease;
+            min-height: 80px;
+            overflow: hidden;
         }}
         .info-item:hover {{
             transform: translateY(-2px);
@@ -1900,22 +1915,31 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         .info-label {{
             font-weight: 600;
             color: #495057;
-            font-size: 13px;
+            font-size: 12px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            margin-bottom: 5px;
+            flex-shrink: 0;
         }}
         .info-value {{
             color: #2c3e50;
-            word-wrap: break-word;
-            font-size: 15px;
+            font-size: 14px;
             font-weight: 500;
+            line-height: 1.4;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            hyphens: auto;
+            flex: 1;
+            overflow: hidden;
         }}
         .truncated-link {{
             color: #007bff;
             text-decoration: none;
-            display: block;
+            display: inline-block;
             max-width: 100%;
             overflow: hidden;
+            word-break: break-all;
+            font-size: 13px;
         }}
         .truncated-link:hover {{
             color: #0056b3;
@@ -1927,6 +1951,31 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             overflow: hidden;
             text-overflow: ellipsis;
             max-width: 100%;
+            font-size: 13px;
+            line-height: 1.3;
+        }}
+        .info-value .truncated-link {{
+            margin-top: 2px;
+        }}
+        .categories-list {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 2px;
+        }}
+        .category-tag {{
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            text-decoration: none;
+            transition: transform 0.2s ease;
+        }}
+        .category-tag:hover {{
+            transform: scale(1.05);
+            color: white;
         }}
         .video-player {{
             margin-top: 20px;
@@ -2290,7 +2339,7 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 <div class="info-item">
                     <span class="info-label">分类:</span>
                     <span class="info-value">
-                        {', '.join([cat['name'] for cat in video_data.get('categories', [])]) if video_data.get('categories') else 'N/A'}
+                        {categories_html}
                     </span>
                 </div>
                 <div class="info-item">
