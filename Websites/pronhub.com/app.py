@@ -1866,25 +1866,19 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
             100% {{ transform: translate(-50%, -50%) scale(1); }}
         }}
         .info-details {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            align-items: stretch;
             background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-            padding: 25px;
+            padding: 20px;
             border-radius: 15px;
             box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.05);
-        }}
-        @media (max-width: 1200px) {{
-            .info-details {{
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }}
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
         }}
         @media (max-width: 768px) {{
             .info-details {{
-                padding: 20px;
-                gap: 12px;
+                grid-template-columns: 1fr;
+                padding: 15px;
+                gap: 8px;
             }}
             .thumbnail {{
                 width: 100%;
@@ -1898,39 +1892,53 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         }}
         .info-item {{
             display: flex;
-            flex-direction: column;
-            gap: 8px;
-            padding: 15px;
-            background: rgba(255, 255, 255, 0.8);
-            border-radius: 12px;
-            border-left: 4px solid #667eea;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-            min-height: 80px;
-            overflow: hidden;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 8px;
+            border-left: 3px solid #667eea;
+            transition: all 0.2s ease;
+            min-height: 45px;
         }}
         .info-item:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            transform: translateX(3px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border-left-color: #764ba2;
         }}
         .info-label {{
             font-weight: 600;
             color: #495057;
-            font-size: 12px;
+            font-size: 11px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 5px;
+            letter-spacing: 0.3px;
+            min-width: 70px;
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 3px;
         }}
         .info-value {{
             color: #2c3e50;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
-            line-height: 1.4;
+            line-height: 1.3;
             word-wrap: break-word;
             overflow-wrap: break-word;
-            hyphens: auto;
             flex: 1;
             overflow: hidden;
+        }}
+        /* 特殊样式的info-item */
+        .info-item.full-width {{
+            grid-column: 1 / -1;
+        }}
+        .info-item.highlight {{
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+            border-left-color: #667eea;
+        }}
+        .info-item.compact {{
+            min-height: 35px;
+            padding: 8px 12px;
         }}
         .truncated-link {{
             color: #007bff;
@@ -1960,22 +1968,24 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
         .categories-list {{
             display: flex;
             flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 2px;
+            gap: 4px;
+            margin-top: 0;
         }}
         .category-tag {{
             background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 10px;
             font-weight: 500;
             text-decoration: none;
-            transition: transform 0.2s ease;
+            transition: all 0.2s ease;
+            white-space: nowrap;
         }}
         .category-tag:hover {{
             transform: scale(1.05);
             color: white;
+            background: linear-gradient(135deg, #764ba2, #667eea);
         }}
         .video-player {{
             margin-top: 20px;
@@ -2312,46 +2322,49 @@ ViewKey: {video_data.get('viewkey', 'N/A')}
                 </video>
             </div>
             <div class="info-details">
-                <div class="info-item">
-                    <span class="info-label">视频ID:</span>
-                    <span class="info-value">{video_data['video_id']}</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">ViewKey:</span>
+                <!-- 基本信息行 -->
+                <div class="info-item compact">
+                    <span class="info-label">🆔 ID:</span>
                     <span class="info-value">{video_data['viewkey']}</span>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">时长:</span>
+                <div class="info-item compact">
+                    <span class="info-label">⏱️ 时长:</span>
                     <span class="info-value">{video_data['duration']}</span>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">上传者:</span>
-                    <span class="info-value">{video_data['uploader']}</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">观看次数:</span>
-                    <span class="info-value">{video_data['views']}</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">发布时间:</span>
+                <div class="info-item compact">
+                    <span class="info-label">📅 发布:</span>
                     <span class="info-value">{video_data.get('publish_time', 'N/A')}</span>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">分类:</span>
+                
+                <!-- 上传者和观看数 -->
+                <div class="info-item highlight">
+                    <span class="info-label">👤 上传者:</span>
+                    <span class="info-value">{video_data['uploader']}</span>
+                </div>
+                <div class="info-item highlight">
+                    <span class="info-label">👁️ 观看:</span>
+                    <span class="info-value">{video_data['views']}</span>
+                </div>
+                
+                <!-- 分类标签 - 跨列显示 -->
+                <div class="info-item full-width">
+                    <span class="info-label">🏷️ 分类:</span>
                     <span class="info-value">
                         {categories_html}
                     </span>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">高清地址:</span>
+                
+                <!-- 链接信息 - 跨列显示 -->
+                <div class="info-item full-width">
+                    <span class="info-label">🎬 高清:</span>
                     <span class="info-value">
                         <a href="{video_data.get('best_m3u8_url', '')}" target="_blank" class="truncated-link" title="{video_data.get('best_m3u8_url', 'N/A')}">
                             <span class="link-text">{video_data.get('best_m3u8_url', 'N/A')}</span>
                         </a>
                     </span>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">原始链接:</span>
+                <div class="info-item full-width">
+                    <span class="info-label">🔗 原始:</span>
                     <span class="info-value">
                         <a href="{video_data['video_url']}" target="_blank" class="truncated-link" title="{video_data['video_url']}">
                             <span class="link-text">{video_data['video_url']}</span>
