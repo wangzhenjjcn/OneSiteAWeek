@@ -1,9 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-Websites/pronhub.com/data/
-Websites/pronhub.com/database/
-Websites/yatu.tv/data/
-Websites/yatu.tv/database/
+
 *.py[cod]
 *$py.class
 
@@ -173,3 +170,6 @@ cython_debug/
 
 
 /Websites/pronhub.com/database
+/Websites/pronhub.com/data
+/Websites/yatu.tv/data
+/Websites/yatu.tv/database
