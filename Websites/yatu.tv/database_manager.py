@@ -3,326 +3,310 @@
 
 import sqlite3
 import os
-import json
 from datetime import datetime
-import logging
-
-logger = logging.getLogger(__name__)
 
 class YatuTVDatabase:
-    def __init__(self, db_path=None):
-        """初始化数据库连接"""
-        if db_path is None:
-            # 确保数据库保存在yatu.tv目录下
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            self.db_path = os.path.join(script_dir, "database", "yatu.tv")
-        else:
-            self.db_path = db_path
-            
-        self.db_dir = os.path.dirname(self.db_path)
+    def __init__(self):
+        """初始化数据库管理器"""
+        # 确保数据库目录存在
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        db_dir = os.path.join(script_dir, "database")
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir)
         
-        # 确保database目录存在
-        if not os.path.exists(self.db_dir):
-            os.makedirs(self.db_dir)
-        
+        self.db_path = os.path.join(db_dir, "yatu.tv")
         self.init_database()
     
     def init_database(self):
-        """初始化数据库表结构"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """初始化数据库表"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # 创建剧集基本信息表
+            # 创建剧集表
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS series (
-                series_id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                series_url TEXT,
-                category TEXT,
-                description TEXT,
-                director TEXT,
-                screenwriter TEXT,
-                language TEXT,
-                release_date TEXT,
-                rating REAL,
-                popularity INTEGER,
-                line_count INTEGER,
-                crawl_time TEXT,
-                update_time TEXT,
-                detail_html TEXT
-            )
+                CREATE TABLE IF NOT EXISTS series (
+                    series_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    url TEXT,
+                    description TEXT,
+                    category TEXT,
+                    year TEXT,
+                    country TEXT,
+                    language TEXT,
+                    director TEXT,
+                    actors TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             ''')
             
-            # 创建剧集集数表
+            # 创建集数表
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id TEXT,
-                episode_id TEXT,
-                episode_number INTEGER,
-                episode_title TEXT,
-                source_type TEXT,
-                source_url TEXT,
-                playframe_url TEXT,
-                crawl_time TEXT,
-                FOREIGN KEY (series_id) REFERENCES series (series_id),
-                UNIQUE(series_id, episode_id)
-            )
+                CREATE TABLE IF NOT EXISTS episodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id TEXT,
+                    episode TEXT,
+                    title TEXT,
+                    url TEXT,
+                    playframe_url TEXT,
+                    note TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (series_id) REFERENCES series (series_id)
+                )
             ''')
             
             # 创建片源表
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id TEXT,
-                episode_id TEXT,
-                source_id TEXT,
-                source_name TEXT,
-                source_url TEXT,
-                real_url TEXT,
-                crawl_time TEXT,
-                FOREIGN KEY (series_id) REFERENCES series (series_id),
-                UNIQUE(series_id, episode_id, source_id)
-            )
+                CREATE TABLE IF NOT EXISTS sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id TEXT,
+                    episode_id TEXT,
+                    source_id TEXT,
+                    source_name TEXT,
+                    source_url TEXT,
+                    real_url TEXT,
+                    source_type TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (series_id) REFERENCES series (series_id)
+                )
+            ''')
+            
+            # 创建HTML页面表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS html_pages (
+                    series_id TEXT,
+                    page_type TEXT,
+                    html_content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (series_id, page_type)
+                )
             ''')
             
             conn.commit()
-            conn.close()
-            logger.info(f"数据库初始化完成: {self.db_path}")
-            
-        except Exception as e:
-            logger.error(f"数据库初始化失败: {e}")
-            raise
     
     def save_series(self, series_info):
-        """保存剧集基本信息"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """保存剧集信息"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            # 提取meta信息
-            meta_info = series_info.get('meta_info', {})
-            
-            cursor.execute('''
-            INSERT OR REPLACE INTO series (
-                series_id, title, series_url, category, description,
-                director, screenwriter, language, release_date, rating,
-                popularity, line_count, crawl_time, update_time, detail_html
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                series_info.get('series_id'),
-                series_info.get('title'),
-                series_info.get('url'),
-                ','.join(meta_info.get('categories', [])),
-                series_info.get('description'),
-                meta_info.get('director'),
-                meta_info.get('screenwriter'),
-                meta_info.get('language'),
-                meta_info.get('year'),
-                meta_info.get('rating'),
-                meta_info.get('popularity'),
-                len(series_info.get('episodes', [])),
-                series_info.get('crawl_time'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                series_info.get('detail_html')
-            ))
-            
+            try:
+                # 尝试使用新结构
+                cursor.execute('''
+                    INSERT OR REPLACE INTO series
+                    (series_id, title, url, description, category, year, country, language, director, actors, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    series_info.get('series_id'),
+                    series_info.get('title'),
+                    series_info.get('url'),
+                    series_info.get('description'),
+                    series_info.get('category'),
+                    series_info.get('year'),
+                    series_info.get('country'),
+                    series_info.get('language'),
+                    series_info.get('director'),
+                    series_info.get('actors')
+                ))
+            except sqlite3.OperationalError:
+                # 使用现有结构
+                cursor.execute('''
+                    INSERT OR REPLACE INTO series
+                    (series_id, title, series_url, category, description, director, language, release_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    series_info.get('series_id'),
+                    series_info.get('title'),
+                    series_info.get('url'), # This maps to series_url in old schema
+                    series_info.get('category'),
+                    series_info.get('description'),
+                    series_info.get('director'),
+                    series_info.get('language'),
+                    series_info.get('year') # This maps to release_date in old schema
+                ))
             conn.commit()
-            conn.close()
-            logger.info(f"剧集信息已保存到数据库: {series_info.get('series_id')}")
-            
-        except Exception as e:
-            logger.error(f"保存剧集信息失败: {e}")
-            raise
     
     def save_episode(self, series_id, episode_info):
-        """保存单集信息"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """保存集数信息"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
-            INSERT OR REPLACE INTO episodes (
-                series_id, episode_id, episode_number, episode_title,
-                source_type, source_url, playframe_url, crawl_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                series_id,
-                episode_info.get('episode'),
-                episode_info.get('episode_num'),
-                episode_info.get('episode_title', ''),
-                episode_info.get('video_source'),
-                episode_info.get('url'),
-                episode_info.get('playframe_url'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            ))
-            
+            try:
+                # 尝试使用新结构
+                cursor.execute('''
+                    INSERT OR REPLACE INTO episodes 
+                    (series_id, episode, title, url, playframe_url, note, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    series_id,
+                    episode_info.get('episode'),
+                    episode_info.get('title'),
+                    episode_info.get('url'),
+                    episode_info.get('playframe_url'),
+                    episode_info.get('note')
+                ))
+            except sqlite3.OperationalError:
+                # 使用现有结构
+                cursor.execute('''
+                    INSERT OR REPLACE INTO episodes 
+                    (series_id, episode_id, episode_title, source_url, playframe_url, crawl_time)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    series_id,
+                    episode_info.get('episode'),
+                    episode_info.get('title'),
+                    episode_info.get('url'),
+                    episode_info.get('playframe_url')
+                ))
             conn.commit()
-            conn.close()
-            logger.debug(f"集数信息已保存: {series_id} - {episode_info.get('episode')}")
-            
-        except Exception as e:
-            logger.error(f"保存集数信息失败: {e}")
-            raise
     
     def save_source(self, series_id, episode_id, source_info):
         """保存片源信息"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
-            INSERT OR REPLACE INTO sources (
-                series_id, episode_id, source_id, source_name,
-                source_url, real_url, crawl_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                series_id,
-                episode_id,
-                source_info.get('source_id'),
-                source_info.get('source_name'),
-                source_info.get('source_url'),
-                source_info.get('real_url'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            ))
-            
+            try:
+                # 尝试使用新结构（包含source_type）
+                cursor.execute('''
+                    INSERT OR REPLACE INTO sources 
+                    (series_id, episode_id, source_id, source_name, source_url, real_url, source_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    series_id,
+                    episode_id,
+                    source_info.get('source_id'),
+                    source_info.get('source_name'),
+                    source_info.get('source_url'),
+                    source_info.get('real_url'),
+                    source_info.get('source_type')
+                ))
+            except sqlite3.OperationalError:
+                # 使用现有结构（不包含source_type）
+                cursor.execute('''
+                    INSERT OR REPLACE INTO sources 
+                    (series_id, episode_id, source_id, source_name, source_url, real_url, crawl_time)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    series_id,
+                    episode_id,
+                    source_info.get('source_id'),
+                    source_info.get('source_name'),
+                    source_info.get('source_url'),
+                    source_info.get('real_url')
+                ))
             conn.commit()
-            conn.close()
-            logger.debug(f"片源信息已保存: {series_id} - {episode_id} - {source_info.get('source_id')}")
-            
-        except Exception as e:
-            logger.error(f"保存片源信息失败: {e}")
-            raise
     
     def save_detail_html(self, series_id, html_content):
-        """保存详情页HTML到数据库"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """保存详情页HTML"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
             cursor.execute('''
-            UPDATE series SET detail_html = ?, update_time = ? WHERE series_id = ?
-            ''', (
-                html_content,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                series_id
-            ))
-            
+                INSERT OR REPLACE INTO html_pages 
+                (series_id, page_type, html_content)
+                VALUES (?, ?, ?)
+            ''', (series_id, 'detail', html_content))
             conn.commit()
-            conn.close()
-            logger.debug(f"详情页HTML已保存: {series_id}")
-            
-        except Exception as e:
-            logger.error(f"保存详情页HTML失败: {e}")
-            raise
-    
-    def get_detail_html(self, series_id):
-        """获取详情页HTML"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT detail_html FROM series WHERE series_id = ?', (series_id,))
-            result = cursor.fetchone()
-            
-            conn.close()
-            return result[0] if result else None
-            
-        except Exception as e:
-            logger.error(f"获取详情页HTML失败: {e}")
-            return None
     
     def is_series_crawled(self, series_id):
-        """检查剧集是否已抓取"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """检查剧集是否已爬取"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
             cursor.execute('SELECT COUNT(*) FROM series WHERE series_id = ?', (series_id,))
-            count = cursor.fetchone()[0]
-            
-            conn.close()
-            return count > 0
-            
-        except Exception as e:
-            logger.error(f"检查剧集状态失败: {e}")
-            return False
+            return cursor.fetchone()[0] > 0
     
     def is_episode_crawled(self, series_id, episode_id):
-        """检查集数是否已抓取"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """检查集数是否已爬取"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
-            SELECT COUNT(*) FROM episodes 
-            WHERE series_id = ? AND episode_id = ?
-            ''', (series_id, episode_id))
-            count = cursor.fetchone()[0]
-            
-            conn.close()
-            return count > 0
-            
-        except Exception as e:
-            logger.error(f"检查集数状态失败: {e}")
-            return False
+            try:
+                # 尝试使用episode列（新结构）
+                cursor.execute('SELECT COUNT(*) FROM episodes WHERE series_id = ? AND episode = ?', (series_id, episode_id))
+            except sqlite3.OperationalError:
+                # 使用episode_id列（现有结构）
+                cursor.execute('SELECT COUNT(*) FROM episodes WHERE series_id = ? AND episode_id = ?', (series_id, episode_id))
+            return cursor.fetchone()[0] > 0
     
     def is_source_crawled(self, series_id, episode_id, source_id):
-        """检查片源是否已抓取"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        """检查片源是否已爬取"""
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
-            SELECT COUNT(*) FROM sources 
-            WHERE series_id = ? AND episode_id = ? AND source_id = ?
-            ''', (series_id, episode_id, source_id))
-            count = cursor.fetchone()[0]
-            
-            conn.close()
-            return count > 0
-            
-        except Exception as e:
-            logger.error(f"检查片源状态失败: {e}")
-            return False
+            cursor.execute('SELECT COUNT(*) FROM sources WHERE series_id = ? AND episode_id = ? AND source_id = ?', 
+                         (series_id, episode_id, source_id))
+            return cursor.fetchone()[0] > 0
     
-    def get_series_stats(self):
+    def get_all_series(self):
+        """获取所有剧集"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            try:
+                # 尝试使用created_at列
+                cursor.execute('SELECT * FROM series ORDER BY created_at DESC')
+            except sqlite3.OperationalError:
+                # 如果没有created_at列，使用其他方式排序
+                cursor.execute('SELECT * FROM series')
+            
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_episodes(self, series_id):
+        """获取指定剧集的所有集数"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            try:
+                # 尝试使用episode列排序（新结构）
+                cursor.execute('SELECT * FROM episodes WHERE series_id = ? ORDER BY episode', (series_id,))
+            except sqlite3.OperationalError:
+                try:
+                    # 尝试使用episode_id列排序（现有结构）
+                    cursor.execute('SELECT * FROM episodes WHERE series_id = ? ORDER BY episode_id', (series_id,))
+                except sqlite3.OperationalError:
+                    # 如果都没有，不排序
+                    cursor.execute('SELECT * FROM episodes WHERE series_id = ?', (series_id,))
+            
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_sources(self, series_id, episode_id):
+        """获取指定集数的所有片源"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM sources WHERE series_id = ? AND episode_id = ?', (series_id, episode_id))
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_series_by_id(self, series_id):
+        """根据ID获取剧集信息"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM series WHERE series_id = ?', (series_id,))
+            row = cursor.fetchone()
+            if row:
+                columns = [description[0] for description in cursor.description]
+                return dict(zip(columns, row))
+            return None
+    
+    def get_statistics(self):
         """获取数据库统计信息"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # 剧集统计
+            # 剧集数量
             cursor.execute('SELECT COUNT(*) FROM series')
             series_count = cursor.fetchone()[0]
             
-            # 集数统计
+            # 集数数量
             cursor.execute('SELECT COUNT(*) FROM episodes')
-            episodes_count = cursor.fetchone()[0]
+            episode_count = cursor.fetchone()[0]
             
-            # 集数统计（所有集数都算成功，因为只保存链接）
-            successful_episodes = episodes_count
-            
-            # 片源统计
+            # 片源数量
             cursor.execute('SELECT COUNT(*) FROM sources')
-            sources_count = cursor.fetchone()[0]
+            source_count = cursor.fetchone()[0]
             
-            # 片源统计（所有片源都算成功，因为只保存链接）
-            successful_sources = sources_count
-            
-            conn.close()
+            # 有播放地址的集数
+            cursor.execute('SELECT COUNT(*) FROM episodes WHERE playframe_url IS NOT NULL AND playframe_url != ""')
+            playable_episodes = cursor.fetchone()[0]
             
             return {
                 'series_count': series_count,
-                'episodes_count': episodes_count,
-                'successful_episodes': successful_episodes,
-                'sources_count': sources_count,
-                'successful_sources': successful_sources,
-                'episode_success_rate': (successful_episodes / episodes_count * 100) if episodes_count > 0 else 0,
-                'source_success_rate': (successful_sources / sources_count * 100) if sources_count > 0 else 0
-            }
-            
-        except Exception as e:
-            logger.error(f"获取统计信息失败: {e}")
-            return None 
+                'episode_count': episode_count,
+                'source_count': source_count,
+                'playable_episodes': playable_episodes,
+                'generated_time': datetime.now().isoformat()
+            } 

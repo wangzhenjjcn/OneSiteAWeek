@@ -12,6 +12,8 @@ import logging
 import chardet
 import re
 from database_manager import YatuTVDatabase
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,6 +31,11 @@ class YatuTVCrawler:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
         
+        # 确保错误页面目录存在
+        self.err_dir = os.path.join(script_dir, "err")
+        if not os.path.exists(self.err_dir):
+            os.makedirs(self.err_dir)
+        
         # 初始化数据库
         self.db = YatuTVDatabase()
         
@@ -38,6 +45,27 @@ class YatuTVCrawler:
             '电影': 'https://www.yatu.tv/m-dy/',
             '电视剧': 'https://www.yatu.tv/m-tv/',
             'jc': 'https://www.yatu.tv/m-dm/jc.htm'  # 特殊页面
+        }
+        
+        # 统计信息
+        self.stats = {
+            'skipped_newplay': 0,  # 跳过的newplay.asp链接数量
+            'total_series': 0,     # 总剧集数量
+            'successful_series': 0, # 成功抓取的剧集数量
+            'consecutive_failures': 0,  # 连续失败次数
+            'total_failures': 0,   # 总失败次数
+            'network_errors': 0,   # 网络错误次数
+            'auth_errors': 0,      # 认证错误次数
+            'rate_limit_errors': 0, # 频率限制错误次数
+            'server_errors': 0,    # 服务器错误次数
+        }
+        
+        # 错误处理配置
+        self.error_config = {
+            'max_consecutive_failures': 10,  # 最大连续失败次数
+            'retry_delay': 30,              # 重试延迟（秒）
+            'max_retries': 3,               # 最大重试次数
+            'backoff_factor': 2,            # 退避因子
         }
         
         self.session = requests.Session()
@@ -53,11 +81,18 @@ class YatuTVCrawler:
             'Sec-Fetch-Site': 'none',
             'Cache-Control': 'max-age=0',
         })
+        
+        # 多线程配置
+        self.max_workers = 10  # 最大线程数
+        self.thread_lock = threading.Lock()  # 线程锁，用于保护共享资源
+        self.progress_lock = threading.Lock()  # 进度锁，用于保护进度输出
     
-    def get_page(self, url):
+    def get_page(self, url, series_id=None, episode_id=None, session=None):
         """获取页面内容"""
         try:
-            response = self.session.get(url, timeout=10)
+            # 使用传入的session或默认session
+            current_session = session if session else self.session
+            response = current_session.get(url, timeout=10)
             response.raise_for_status()
             
             # 智能编码检测和处理
@@ -82,10 +117,21 @@ class YatuTVCrawler:
                     response.encoding = 'gb2312'
             
             logger.debug(f"页面编码: {response.encoding}")
-            return response.text
+            
+            # 检查页面内容是否正常
+            html = response.text
+            if self._is_error_page(html):
+                error_type = self._analyze_error_page(html)
+                self._handle_error(error_type, url, series_id=series_id, episode_id=episode_id, html_content=html)
+                return None
+            
+            # 重置连续失败计数
+            self.stats['consecutive_failures'] = 0
+            return html
             
         except Exception as e:
-            logger.error(f"获取页面失败: {url}, 错误: {e}")
+            error_type = self._analyze_exception(e)
+            self._handle_error(error_type, url, str(e), series_id=series_id, episode_id=episode_id, html_content=html if 'html' in locals() else None)
             return None
     
     def crawl_all_categories(self):
@@ -162,8 +208,23 @@ class YatuTVCrawler:
                 # 完整的链接地址
                 full_url = urllib.parse.urljoin(self.base_url, href)
                 
-                # 提取剧集ID
+                # 过滤掉newplay.asp开头的链接
+                if full_url.startswith('https://www.yatu.tv/m/newplay.asp'):
+                    logger.debug(f"跳过newplay.asp链接: {title}")
+                    self.stats['skipped_newplay'] += 1
+                    continue
+                
+                # 验证链接格式：必须是 /m数字id/ 格式的剧集详情页链接
+                if not re.match(r'^/m\d+/$', href) and not re.match(r'^\.\./m\d+/$', href):
+                    logger.debug(f"跳过不符合格式的剧集链接: {title} -> {href}")
+                    self.stats['skipped_newplay'] += 1
+                    continue
+                
+                # 提取剧集ID（从 /m030926/ 中提取 030926）
                 series_id = href.strip('/').split('/')[-1] if href else ''
+                # 如果series_id以m开头，去掉m前缀
+                if series_id.startswith('m'):
+                    series_id = series_id[1:]
                 
                 # 清理series_id，移除URL参数
                 if '?' in series_id:
@@ -179,7 +240,7 @@ class YatuTVCrawler:
                 }
                 
                 category_info['items'].append(item)
-                logger.info(f"抓取到: {title}")
+                logger.info(f"抓取到: {title} -> {full_url}")
         
         return categories
     
@@ -219,6 +280,12 @@ class YatuTVCrawler:
             
             all_items.extend(items)
             logger.info(f"第 {page} 页抓取到 {len(items)} 个剧集")
+            if items:
+                logger.info(f"第 {page} 页剧集列表:")
+                for i, item in enumerate(items[:3]):  # 只显示前3个
+                    logger.info(f"  {i+1}. {item['title']} -> {item['url']}")
+                if len(items) > 3:
+                    logger.info(f"  ... 还有 {len(items)-3} 个剧集")
             
             # 检查是否到达最后一页（页脚翻页变灰）
             if self._is_last_page(soup):
@@ -229,6 +296,10 @@ class YatuTVCrawler:
             time.sleep(1)  # 避免请求过快
         
         logger.info(f"{category_name} 分类总共抓取到 {len(all_items)} 个剧集")
+        if all_items:
+            logger.info(f"{category_name} 分类剧集详情:")
+            for i, item in enumerate(all_items):
+                logger.info(f"  {i+1}. {item['title']} -> {item['url']}")
         return all_items
     
     def _extract_series_items(self, soup, category_name):
@@ -241,7 +312,8 @@ class YatuTVCrawler:
             href = link.get('href', '')
             
             # 检查是否是剧集详情页链接（m开头的数字ID）
-            if re.match(r'/m\d+/', href):
+            # 使用更精确的正则表达式
+            if re.match(r'^/m\d+/$', href) or re.match(r'^\.\./m\d+/$', href):
                 title = link.get_text(strip=True)
                 if not title:
                     continue
@@ -249,8 +321,23 @@ class YatuTVCrawler:
                 # 完整的链接地址
                 full_url = urllib.parse.urljoin(self.base_url, href)
                 
-                # 提取剧集ID
+                # 过滤掉newplay.asp开头的链接
+                if full_url.startswith('https://www.yatu.tv/m/newplay.asp'):
+                    logger.debug(f"跳过newplay.asp链接: {title}")
+                    self.stats['skipped_newplay'] += 1
+                    continue
+                
+                # 验证链接格式：必须是 /m数字id/ 格式的剧集详情页链接
+                if not re.match(r'^/m\d+/$', href) and not re.match(r'^\.\./m\d+/$', href):
+                    logger.debug(f"跳过不符合格式的剧集链接: {title} -> {href}")
+                    self.stats['skipped_newplay'] += 1
+                    continue
+                
+                # 提取剧集ID（从 /m030926/ 中提取 030926）
                 series_id = href.strip('/').split('/')[-1] if href else ''
+                # 如果series_id以m开头，去掉m前缀
+                if series_id.startswith('m'):
+                    series_id = series_id[1:]
                 
                 # 清理series_id，移除URL参数
                 if '?' in series_id:
@@ -266,7 +353,7 @@ class YatuTVCrawler:
                 }
                 
                 items.append(item)
-                logger.debug(f"提取到剧集: {title}")
+                logger.info(f"提取到剧集: {title} -> {full_url}")
         
         return items
     
@@ -354,18 +441,29 @@ class YatuTVCrawler:
                             'source_type': '站外片源'
                         })
             
-            # 方法2: 查找play数字-数字.html格式的链接（过滤掉newplay.asp）
+            # 方法2: 查找play数字-数字.html格式的链接（只接受正确的格式）
             play_links = soup.find_all('a', href=re.compile(r'play\d+-\d+\.html'))
             for link in play_links:
                 href = link.get('href', '')
                 text = link.get_text(strip=True)
                 
                 if href and text:
+                    # 验证链接格式：必须是正确的播放链接格式
+                    if not self._is_valid_play_url(href):
+                        logger.debug(f"跳过不符合格式的播放链接: {text} -> {href}")
+                        continue
+                    
                     # 过滤掉以newplay.asp开头的链接
                     if href.startswith('/m/newplay.asp') or 'newplay.asp' in href:
+                        logger.debug(f"跳过newplay.asp播放链接: {text} -> {href}")
                         continue
                     
                     full_url = urllib.parse.urljoin(self.base_url, href)
+                    
+                    # 额外过滤：确保不是newplay.asp开头的完整URL
+                    if full_url.startswith('https://www.yatu.tv/m/newplay.asp'):
+                        logger.debug(f"跳过newplay.asp完整URL: {text} -> {full_url}")
+                        continue
                     
                     # 检查是否已存在
                     exists = any(s['source_url'] == full_url for s in sources)
@@ -376,6 +474,7 @@ class YatuTVCrawler:
                             'source_url': full_url,
                             'source_type': '站外片源'
                         })
+                        logger.info(f"找到正确的播放链接: {text} -> {full_url}")
             
             # 方法3: 查找id包含cs的元素
             cs_elements = soup.find_all(attrs={"id": re.compile(r"cs\d*")})
@@ -408,31 +507,53 @@ class YatuTVCrawler:
             logger.error(f"查找站外片源失败: {e}")
             return []
     
-    def crawl_series_detail(self, series_url, series_id, category_type=None):
+    def crawl_series_detail(self, series_url, series_id, category_type=None, session=None):
         """抓取剧集详情页面"""
         logger.info(f"正在抓取剧集详情: {series_url}")
+        logger.info(f"剧集ID: {series_id}, 分类: {category_type}")
         
         # 检查数据库和data目录的状态
         db_has_series = self.db.is_series_crawled(series_id)
         existing_data = self.check_existing_data(series_id)
         
-        # 只有当数据库和data目录都有数据时才跳过
+        # 确定是否需要抓取和生成data文件
+        need_crawl = True
+        need_generate_data = True
+        
         if db_has_series and existing_data:
             logger.info(f"剧集 {series_id} 在数据库和data目录中都存在，跳过抓取")
+            need_crawl = False
+            need_generate_data = False
         elif db_has_series and not existing_data:
-            logger.info(f"剧集 {series_id} 在数据库中存在但data目录中缺失，需要更新data目录")
+            logger.info(f"剧集 {series_id} 在数据库中存在但data目录中缺失，需要从数据库生成data文件")
+            need_crawl = False
+            need_generate_data = True
         elif not db_has_series and existing_data:
             logger.info(f"剧集 {series_id} 在data目录中存在但数据库中缺失，需要更新数据库")
+            need_crawl = True
+            need_generate_data = False
         else:
             logger.info(f"剧集 {series_id} 在数据库和data目录中都不存在，需要完整抓取")
+            need_crawl = True
+            need_generate_data = True
         
-        html = self.get_page(series_url)
+        # 如果不需要抓取但需要生成data文件，从数据库生成
+        if not need_crawl and need_generate_data:
+            logger.info(f"从数据库生成剧集 {series_id} 的data文件")
+            series_info = self._generate_data_from_database(series_id, category_type)
+            if series_info:
+                self.save_series_data(series_info)
+                return series_info
+            else:
+                logger.warning(f"无法从数据库生成剧集 {series_id} 的数据，将进行完整抓取")
+                need_crawl = True
+                need_generate_data = True
+        
+        # 使用传入的session或默认session
+        current_session = session if session else self.session
+        html = self.get_page(series_url, series_id=series_id, session=current_session)
         if not html:
             return None
-        
-        # 保存详情页HTML到数据库
-        self.db.save_detail_html(series_id, html)
-        logger.info(f"已保存详情页HTML到数据库: {series_id}")
         
         soup = BeautifulSoup(html, 'html.parser')
         
@@ -441,6 +562,7 @@ class YatuTVCrawler:
         episode_patterns = []
         
         # 首先查找现有的播放链接以了解剧集结构
+        # 方法1: 查找特定的播放容器
         span_flv = soup.find('span', id='span_flv')
         if not span_flv:
             js_flv_span = soup.find('span', id='js_flv')
@@ -456,11 +578,56 @@ class YatuTVCrawler:
                 if episode_text and episode_url and 'play' in episode_url:
                     episode_patterns.append((episode_text, episode_url))
         
+        # 方法2: 如果方法1没有找到，使用更全面的查找
+        if not episode_patterns:
+            logger.info("未在特定容器中找到播放链接，使用全面查找方法")
+            
+            # 查找所有play数字-数字.html格式的链接
+            play_links = soup.find_all('a', href=re.compile(r'play\d+-\d+\.html'))
+            for link in play_links:
+                episode_text = link.get_text(strip=True)
+                episode_url = link.get('href', '')
+                
+                if episode_text and episode_url:
+                    # 验证链接格式
+                    if self._is_valid_play_url(episode_url):
+                        episode_patterns.append((episode_text, episode_url))
+                        logger.debug(f"找到播放链接: {episode_text} -> {episode_url}")
+        
+        # 方法3: 查找id包含cs的元素中的播放链接
+        if not episode_patterns:
+            logger.info("未找到标准播放链接，查找cs元素中的链接")
+            cs_elements = soup.find_all(attrs={"id": re.compile(r"cs\d*")})
+            for element in cs_elements:
+                links = element.find_all('a')
+                for link in links:
+                    episode_text = link.get_text(strip=True)
+                    episode_url = link.get('href', '')
+                    
+                    if episode_text and episode_url and 'play' in episode_url:
+                        if self._is_valid_play_url(episode_url):
+                            episode_patterns.append((episode_text, episode_url))
+                            logger.debug(f"在cs元素中找到播放链接: {episode_text} -> {episode_url}")
+        
+        logger.info(f"总共找到 {len(episode_patterns)} 个播放链接模式")
+        
+        # 如果没有找到任何播放链接，保存页面用于调试
+        if not episode_patterns:
+            logger.error(f"未找到任何播放链接，保存页面用于调试")
+            self._save_error_page(
+                series_id, 
+                None, 
+                'no_play_links', 
+                series_url, 
+                html, 
+                f"在剧集详情页中未找到任何播放链接，页面类型: {self._analyze_page_type(series_url, html)}"
+            )
+            return None
+        
         # 分析剧集规律：play0-1.html, play0-2.html 等
         max_episodes = 0
         available_lines = set()
         
-        import re
         for episode_text, episode_url in episode_patterns:
             # 从URL中提取线路和集数：play0-123.html
             play_match = re.search(r'play(\d+)-(\d+)\.html', episode_url)
@@ -489,6 +656,7 @@ class YatuTVCrawler:
             primary_line = min(available_lines)  # 使用第一个线路作为主线路
             
             for ep_num in range(1, max_episodes + 1):
+                # 构建正确的播放URL格式：/m数字id/play片源id-剧集集数.html
                 episode_url = f"play{primary_line}-{ep_num}.html"
                 full_episode_url = urllib.parse.urljoin(series_url, episode_url)
                 
@@ -674,67 +842,107 @@ class YatuTVCrawler:
             
             # 专注于站外片源分析
             try:
-                logger.info(f"正在分析第{episode['episode']}集的站外片源...")
+                logger.info(f"正在分析第{episode['episode']}集的播放地址...")
                 
                 # 获取播放页面的HTML
-                play_html = self.get_page(episode['url'])
+                play_html = self.get_page(episode['url'], series_id=series_id, episode_id=episode['episode'])
                 if not play_html:
                     episode['note'] = "无法获取播放页面"
                     self.db.save_episode(series_id, episode)
                     continue
                 
-                # 查找站外片源（id='cs2'）
-                external_sources = self.find_external_sources(play_html)
-                
-                if external_sources:
-                    logger.info(f"第{episode['episode']}集找到 {len(external_sources)} 个站外片源")
-                    
-                    # 处理每个站外片源
-                    for source in external_sources:
-                        source_id = source['source_id']
+                # 直接从播放页面提取iframe地址
+                play_url = episode['url']
+                if 'play' in play_url and '.html' in play_url:
+                    real_url = self.get_playframe_url(play_url, series_id=series_id, episode_id=episode['episode'], session=current_session)
+                    if real_url:
+                        episode['playframe_url'] = real_url
+                        episode['note'] = f"✓ 解析成功: 直接提取"
+                        playframe_found_count += 1
+                        logger.info(f"✓ 第{episode['episode']}集解析成功: {real_url}")
                         
-                        # 检查数据库中是否已有此片源
-                        db_has_source = self.db.is_source_crawled(series_id, episode_id, source_id)
+                        # 保存片源信息到数据库
+                        source_info = {
+                            'source_id': 'direct_extract',
+                            'source_name': '直接提取',
+                            'source_url': play_url,
+                            'real_url': real_url,
+                            'source_type': '直接提取'
+                        }
+                        self.db.save_source(series_id, episode_id, source_info)
+                    else:
+                        episode['note'] = f"❌ 解析失败: 无法提取播放地址"
+                        logger.info(f"❌ 第{episode['episode']}集解析失败")
                         
-                        # 如果数据库中已有此片源，跳过
-                        if db_has_source:
-                            logger.info(f"片源 {source['source_name']} 已在数据库中，跳过")
-                            continue
+                        # 尝试查找站外片源作为备选方案
+                        logger.info(f"尝试查找第{episode['episode']}集的站外片源作为备选...")
+                        external_sources = self.find_external_sources(play_html)
                         
-                        # 解析play页面的iframe实际地址
-                        play_url = source['source_url']
-                        if 'play' in play_url and '.html' in play_url:
-                            real_url = self.get_playframe_url(play_url)
-                            if real_url:
-                                source['real_url'] = real_url
-                                episode['playframe_url'] = real_url
-                                episode['note'] = f"✓ 解析成功: {source['source_name']}"
-                                playframe_found_count += 1
-                                logger.info(f"✓ 解析成功: {source['source_name']} -> {real_url}")
-                            else:
-                                source['real_url'] = None
-                                episode['playframe_url'] = play_url
-                                episode['note'] = f"❌ 解析失败: {source['source_name']}"
-                                logger.info(f"❌ 解析失败: {source['source_name']}")
+                        if external_sources:
+                            logger.info(f"第{episode['episode']}集找到 {len(external_sources)} 个站外片源")
+                            
+                            # 处理每个站外片源
+                            for source in external_sources:
+                                source_id = source['source_id']
+                                
+                                # 检查数据库中是否已有此片源
+                                db_has_source = self.db.is_source_crawled(series_id, episode_id, source_id)
+                                
+                                # 如果数据库中已有此片源，跳过
+                                if db_has_source:
+                                    logger.info(f"片源 {source['source_name']} 已在数据库中，跳过")
+                                    continue
+                                
+                                # 解析play页面的iframe实际地址
+                                source_play_url = source['source_url']
+                                if 'play' in source_play_url and '.html' in source_play_url:
+                                    source_real_url = self.get_playframe_url(source_play_url, series_id=series_id, episode_id=episode['episode'], session=current_session)
+                                    if source_real_url:
+                                        source['real_url'] = source_real_url
+                                        episode['playframe_url'] = source_real_url
+                                        episode['note'] = f"✓ 备选解析成功: {source['source_name']}"
+                                        playframe_found_count += 1
+                                        logger.info(f"✓ 备选解析成功: {source['source_name']} -> {source_real_url}")
+                                        break  # 找到一个就停止
+                                    else:
+                                        source['real_url'] = None
+                                        logger.info(f"❌ 备选解析失败: {source['source_name']}")
+                                else:
+                                    # 非play链接，直接保存
+                                    source['real_url'] = None
+                                    episode['playframe_url'] = source_play_url
+                                    episode['note'] = f"✓ 备选站外片源: {source['source_name']}"
+                                    playframe_found_count += 1
+                                    logger.info(f"✓ 备选保存片源链接: {source['source_name']} -> {source_play_url}")
+                                    break  # 找到一个就停止
+                                
+                                # 立即保存片源信息到数据库
+                                self.db.save_source(series_id, episode_id, source)
+                                
+                                # 延时避免请求过快
+                                time.sleep(0.5)
+                            
+                            if not episode.get('playframe_url'):
+                                episode['note'] = f"站外片源 {len(external_sources)} 个，均无法播放"
                         else:
-                            # 非play链接，直接保存
-                            source['real_url'] = None
-                            episode['playframe_url'] = play_url
-                            episode['note'] = f"✓ 站外片源: {source['source_name']}"
-                            playframe_found_count += 1
-                            logger.info(f"✓ 保存片源链接: {source['source_name']} -> {play_url}")
-                        
-                        # 立即保存片源信息到数据库
-                        self.db.save_source(series_id, episode_id, source)
-                        
-                        # 延时避免请求过快
-                        time.sleep(0.5)  # 减少延时
-                    
-                    if not episode.get('playframe_url'):
-                        episode['note'] = f"站外片源 {len(external_sources)} 个，均无法播放"
+                            episode['note'] = "未找到站外片源"
+                            logger.debug(f"- 第{episode['episode']}集未找到站外片源")
                 else:
-                    episode['note'] = "未找到站外片源"
-                    logger.debug(f"- 第{episode['episode']}集未找到站外片源")
+                    # 非play链接，直接保存
+                    episode['playframe_url'] = play_url
+                    episode['note'] = f"✓ 非播放链接: 直接保存"
+                    playframe_found_count += 1
+                    logger.info(f"✓ 非播放链接: {play_url}")
+                    
+                    # 保存片源信息到数据库
+                    source_info = {
+                        'source_id': 'non_play_link',
+                        'source_name': '非播放链接',
+                        'source_url': play_url,
+                        'real_url': None,
+                        'source_type': '非播放链接'
+                    }
+                    self.db.save_source(series_id, episode_id, source_info)
                 
                 # 保存集数信息到数据库
                 self.db.save_episode(series_id, episode)
@@ -743,7 +951,7 @@ class YatuTVCrawler:
                 time.sleep(1)
                 
             except Exception as e:
-                logger.error(f"分析第{episode['episode']}集站外片源失败: {e}")
+                logger.error(f"分析第{episode['episode']}集播放地址失败: {e}")
                 episode['note'] = "分析失败"
                 self.db.save_episode(series_id, episode)
         
@@ -767,6 +975,10 @@ class YatuTVCrawler:
         
         logger.info(f"找到 {len(episodes)} 集")
         
+        # 保存详情页HTML到数据库
+        self.db.save_detail_html(series_id, html)
+        logger.info(f"已保存详情页HTML到数据库: {series_id}")
+        
         # 保存剧集信息到数据库
         self.db.save_series(series_info)
         
@@ -775,13 +987,14 @@ class YatuTVCrawler:
         
         return series_info
     
-    def get_playframe_url(self, play_url):
+    def get_playframe_url(self, play_url, series_id=None, episode_id=None, session=None):
         """获取playframe iframe的src地址"""
         try:
-            logger.debug(f"正在获取playframe地址: {play_url}")
+            logger.info(f"正在获取playframe地址: {play_url}")
             
             # 从play_url提取详情页URL作为Referer
             detail_url = '/'.join(play_url.split('/')[:-1]) + '/'
+            logger.debug(f"设置Referer: {detail_url}")
             
             # 为播放页面设置特殊的请求头
             headers = {
@@ -791,9 +1004,12 @@ class YatuTVCrawler:
                 'Sec-Fetch-Site': 'same-origin',
             }
             
-            html = self.get_page_with_headers(play_url, headers)
+            html = self.get_page_with_headers(play_url, headers, series_id=series_id, episode_id=episode_id, session=session)
             if not html:
+                logger.error(f"无法获取播放页面HTML: {play_url}")
                 return None
+            
+            logger.debug(f"播放页面HTML长度: {len(html)} 字符")
             
             # 查找playframe iframe的src地址
             iframe_url = self._extract_iframe_src(html)
@@ -801,7 +1017,27 @@ class YatuTVCrawler:
                 logger.info(f"✓ 找到playframe地址: {iframe_url}")
                 return iframe_url
             else:
-                logger.debug(f"未找到playframe iframe: {play_url}")
+                logger.warning(f"未找到playframe iframe: {play_url}")
+                # 输出HTML片段用于调试
+                if len(html) > 500:
+                    logger.debug(f"HTML片段: {html[:500]}...")
+                
+                # 尝试从JavaScript中提取
+                logger.info("尝试从JavaScript中提取iframe链接...")
+                js_iframe_url = self._extract_iframe_from_js(html)
+                if js_iframe_url:
+                    logger.info(f"✓ 从JavaScript中找到playframe地址: {js_iframe_url}")
+                    return js_iframe_url
+                
+                # 如果还是没找到，输出更多调试信息
+                logger.debug(f"页面总长度: {len(html)} 字符")
+                if 'iframe' in html.lower():
+                    logger.debug("页面包含iframe标签")
+                if 'script' in html.lower():
+                    logger.debug("页面包含script标签")
+                if 'playframe' in html.lower():
+                    logger.debug("页面包含playframe相关内容")
+                
                 return None
             
         except Exception as e:
@@ -822,16 +1058,87 @@ class YatuTVCrawler:
             logger.debug(f"检查已存在数据失败: {e}")
             return None
     
-
-
-    def get_page_with_headers(self, url, additional_headers=None):
+    def _generate_data_from_database(self, series_id, category_type=None):
+        """从数据库生成剧集数据"""
+        try:
+            # 获取剧集基本信息
+            series_data = self.db.get_series_by_id(series_id)
+            if not series_data:
+                logger.error(f"数据库中未找到剧集 {series_id} 的基本信息")
+                return None
+            
+            # 获取剧集的所有集数
+            episodes_data = self.db.get_episodes(series_id)
+            if not episodes_data:
+                logger.error(f"数据库中未找到剧集 {series_id} 的集数信息")
+                return None
+            
+            # 构建剧集信息
+            series_info = {
+                'series_id': series_id,
+                'title': series_data.get('title', ''),
+                'url': series_data.get('url', series_data.get('series_url', '')),
+                'description': series_data.get('description', ''),
+                'category': series_data.get('category', category_type or ''),
+                'year': series_data.get('year', series_data.get('release_date', '')),
+                'country': series_data.get('country', ''),
+                'language': series_data.get('language', ''),
+                'director': series_data.get('director', ''),
+                'actors': series_data.get('actors', ''),
+                'cover_image': '',
+                'meta_info': {},
+                'episodes': []
+            }
+            
+            # 处理集数信息
+            for episode_data in episodes_data:
+                episode_id = episode_data.get('episode', episode_data.get('episode_id', ''))
+                episode_title = episode_data.get('title', episode_data.get('episode_title', ''))
+                episode_url = episode_data.get('url', episode_data.get('source_url', ''))
+                playframe_url = episode_data.get('playframe_url', '')
+                
+                # 获取该集数的所有片源
+                sources_data = self.db.get_sources(series_id, episode_id)
+                sources = []
+                
+                for source_data in sources_data:
+                    source = {
+                        'source_id': source_data.get('source_id', ''),
+                        'source_name': source_data.get('source_name', ''),
+                        'source_url': source_data.get('source_url', ''),
+                        'real_url': source_data.get('real_url', ''),
+                        'source_type': source_data.get('source_type', '')
+                    }
+                    sources.append(source)
+                
+                episode = {
+                    'episode': episode_id,
+                    'title': episode_title,
+                    'url': episode_url,
+                    'playframe_url': playframe_url,
+                    'note': '',
+                    'sources': sources
+                }
+                
+                series_info['episodes'].append(episode)
+            
+            logger.info(f"从数据库成功生成剧集 {series_id} 的数据，共 {len(series_info['episodes'])} 集")
+            return series_info
+            
+        except Exception as e:
+            logger.error(f"从数据库生成剧集 {series_id} 数据失败: {e}")
+            return None
+    
+    def get_page_with_headers(self, url, additional_headers=None, series_id=None, episode_id=None, session=None):
         """使用特定请求头获取页面内容"""
         try:
-            headers = self.session.headers.copy()
+            # 使用传入的session或默认session
+            current_session = session if session else self.session
+            headers = current_session.headers.copy()
             if additional_headers:
                 headers.update(additional_headers)
             
-            response = self.session.get(url, timeout=10, headers=headers)
+            response = current_session.get(url, timeout=10, headers=headers)
             response.raise_for_status()
             
             # 智能编码检测和处理
@@ -854,13 +1161,22 @@ class YatuTVCrawler:
                     response.encoding = 'gb2312'
             
             logger.debug(f"页面编码: {response.encoding}")
-            return response.text
+            
+            # 检查页面内容是否正常
+            html = response.text
+            if self._is_error_page(html):
+                error_type = self._analyze_error_page(html)
+                self._handle_error(error_type, url, series_id=series_id, episode_id=episode_id, html_content=html)
+                return None
+            
+            # 重置连续失败计数
+            self.stats['consecutive_failures'] = 0
+            return html
             
         except Exception as e:
-            logger.error(f"获取页面失败: {url}, 错误: {e}")
+            error_type = self._analyze_exception(e)
+            self._handle_error(error_type, url, str(e), series_id=series_id, episode_id=episode_id, html_content=html if 'html' in locals() else None)
             return None
-    
-
     
     def _extract_iframe_src(self, html):
         """机械地查找iframe的src完整引用或script中的m3u8地址"""
@@ -870,17 +1186,45 @@ class YatuTVCrawler:
             
             soup = BeautifulSoup(html, 'html.parser')
             
-            # 方法1: 查找所有iframe元素
-            iframes = soup.find_all('iframe')
-            
-            for iframe in iframes:
-                iframe_src = iframe.get('src', '')
-                
+            # 方法1: 优先查找 id="playframe" 的iframe（这是真正的播放器）
+            playframe = soup.find('iframe', {'id': 'playframe'})
+            if playframe:
+                iframe_src = playframe.get('src', '')
                 if iframe_src:
-                    logger.info(f"✓ 找到iframe src: {iframe_src}")
+                    logger.info(f"✓ 找到playframe iframe src: {iframe_src}")
                     return iframe_src
             
-            # 方法2: 查找script标签中的m3u8地址
+            # 方法2: 查找name="playframe"的iframe
+            playframe_by_name = soup.find('iframe', {'name': 'playframe'})
+            if playframe_by_name:
+                iframe_src = playframe_by_name.get('src', '')
+                if iframe_src:
+                    logger.info(f"✓ 找到playframe iframe (by name) src: {iframe_src}")
+                    return iframe_src
+            
+            # 方法3: 查找所有iframe元素
+            iframes = soup.find_all('iframe')
+            logger.debug(f"找到 {len(iframes)} 个iframe元素")
+            
+            for i, iframe in enumerate(iframes):
+                iframe_src = iframe.get('src', '')
+                iframe_id = iframe.get('id', '')
+                iframe_name = iframe.get('name', '')
+                
+                if iframe_src:
+                    logger.debug(f"iframe[{i}] - id: {iframe_id}, name: {iframe_name}, src: {iframe_src}")
+                    # 如果是第一个有src的iframe，返回它
+                    if i == 0:
+                        logger.info(f"✓ 返回第一个iframe src: {iframe_src}")
+                        return iframe_src
+            
+            # 方法4: 从JavaScript中提取iframe链接
+            iframe_url = self._extract_iframe_from_js(html)
+            if iframe_url:
+                logger.info(f"✓ 从JavaScript中提取到iframe地址: {iframe_url}")
+                return iframe_url
+            
+            # 方法5: 查找script标签中的m3u8地址
             scripts = soup.find_all('script')
             for script in scripts:
                 script_content = script.string
@@ -889,11 +1233,20 @@ class YatuTVCrawler:
                     url_match = re.search(r'url\s*=\s*["\']([^"\']*\.m3u8[^"\']*)["\']', script_content)
                     if url_match:
                         m3u8_url = url_match.group(1)
-                        # 移除&next参数
-                        if '&next=' in m3u8_url:
-                            m3u8_url = m3u8_url.split('&next=')[0]
-                        logger.info(f"✓ 找到script中的m3u8地址: {m3u8_url}")
-                        return m3u8_url
+                        # 转换为m3u8player.org播放器地址
+                        player_url = self._convert_m3u8_to_player_url(m3u8_url)
+                        logger.info(f"✓ 找到script中的m3u8地址并转换为播放器: {player_url}")
+                        return player_url
+            
+            # 方法6: 查找script标签中的视频ID并构建播放地址
+            video_id = self._extract_video_id_from_script(html)
+            if video_id:
+                logger.info(f"✓ 找到视频ID: {video_id}")
+                # 尝试构建播放地址
+                play_url = self._build_play_url_from_video_id(video_id)
+                if play_url:
+                    logger.info(f"✓ 从视频ID构建播放地址: {play_url}")
+                    return play_url
             
             # 如果没有找到任何播放地址，返回None
             logger.debug("未找到任何iframe或m3u8地址")
@@ -902,6 +1255,118 @@ class YatuTVCrawler:
         except Exception as e:
             logger.error(f"提取播放地址失败: {e}")
             return None
+    
+    def _extract_video_id_from_script(self, html):
+        """从JavaScript中提取视频ID"""
+        try:
+            import re
+            
+            # 查找url = "v_xxxxx"的模式（原有格式）
+            url_match = re.search(r'url\s*=\s*["\'](v_[a-zA-Z0-9_]+)["\']', html)
+            if url_match:
+                video_id = url_match.group(1)
+                return video_id
+            
+            # 查找url = "字母+数字"的模式（新格式）
+            url_match_new = re.search(r'url\s*=\s*["\']([a-zA-Z][a-zA-Z0-9]{10,})["\']', html)
+            if url_match_new:
+                video_id = url_match_new.group(1)
+                return video_id
+            
+            # 查找其他可能的视频ID模式（v_格式）
+            video_id_match = re.search(r'["\'](v_[a-zA-Z0-9_]+)["\']', html)
+            if video_id_match:
+                video_id = video_id_match.group(1)
+                return video_id
+            
+            # 查找其他可能的视频ID模式（字母+数字格式）
+            video_id_match_new = re.search(r'["\']([a-zA-Z][a-zA-Z0-9]{10,})["\']', html)
+            if video_id_match_new:
+                video_id = video_id_match_new.group(1)
+                return video_id
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"提取视频ID失败: {e}")
+            return None
+    
+    def _build_play_url_from_video_id(self, video_id):
+        """从视频ID构建播放地址"""
+        try:
+            # 判断视频ID格式
+            if video_id.startswith('v_'):
+                # v_格式：使用原有的模板
+                templates = [
+                    f"https://v.cdnlz22.com/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2025/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2024/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2023/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2022/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2021/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2020/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2019/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2018/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2017/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2016/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2015/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2014/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2013/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2012/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2011/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2010/{video_id}/index.m3u8",
+                ]
+            else:
+                # 字母+数字格式：使用新的模板
+                templates = [
+                    f"https://v.cdnlz22.com/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2025/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2024/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2023/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2022/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2021/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2020/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2019/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2018/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2017/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2016/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2015/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2014/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2013/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2012/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2011/{video_id}/index.m3u8",
+                    f"https://v.cdnlz22.com/2010/{video_id}/index.m3u8",
+                ]
+            
+            # 获取m3u8地址
+            m3u8_url = templates[0]
+            
+            # 使用m3u8player.org的在线播放器
+            player_url = f"https://m3u8player.org/player.html?url={m3u8_url}"
+            
+            return player_url
+            
+        except Exception as e:
+            logger.debug(f"构建播放地址失败: {e}")
+            return None
+    
+    def _convert_m3u8_to_player_url(self, m3u8_url):
+        """将m3u8地址转换为m3u8player.org播放器地址"""
+        try:
+            if m3u8_url and '.m3u8' in m3u8_url:
+                # 移除&next=参数
+                if '&next=' in m3u8_url:
+                    m3u8_url = m3u8_url.split('&next=')[0]
+                
+                # 使用m3u8player.org的在线播放器
+                player_url = f"https://m3u8player.org/player.html?url={m3u8_url}"
+                return player_url
+            
+            return m3u8_url
+            
+        except Exception as e:
+            logger.debug(f"转换播放器地址失败: {e}")
+            return m3u8_url
     
     def _extract_episode_number(self, episode_text):
         """从剧集文本中提取集数数字"""
@@ -935,16 +1400,14 @@ class YatuTVCrawler:
             # 去掉前导0，转换为纯数字
             episode_num = str(int(episode_number))
             
-            # 构建play0-集数.html格式的URL
-            play_url = f"https://www.yatu.tv/{series_id}/play0-{episode_num}.html"
+            # 构建正确的播放URL格式：/m数字id/play片源id-剧集集数.html
+            play_url = f"https://www.yatu.tv/m{series_id}/play0-{episode_num}.html"
             logger.debug(f"推理播放URL: {play_url}")
             return play_url
             
         except Exception as e:
             logger.error(f"推理播放URL失败: {e}")
             return None
-    
-
     
     def _extract_m3u8_from_iframe(self, html):
         """从HTML中的iframe提取m3u8地址，专注于playframe"""
@@ -1974,17 +2437,27 @@ class YatuTVCrawler:
         # 2. 生成首页 HTML
         self.generate_index_html(categories_data)
         
-        # 3. 抓取所有剧集详情
-        logger.info("开始抓取所有剧集详情...")
+        # 显示所有分类的汇总信息
+        logger.info("=== 分类抓取汇总 ===")
+        for category_name, category_info in categories_data.items():
+            items = category_info.get('items', [])
+            logger.info(f"{category_name}: {len(items)} 部剧集")
+            for item in items:
+                logger.info(f"  - {item['title']} -> {item['url']}")
         
-        detail_count = 0
+        # 3. 抓取所有剧集详情（多线程版本）
+        logger.info("开始抓取所有剧集详情...")
+        logger.info(f"使用多线程模式，最大线程数: {self.max_workers}")
+        
+        # 收集所有需要抓取的剧集
+        all_series = []
         total_count = sum(len(info['items']) for info in categories_data.values())
+        self.stats['total_series'] = total_count
         
         for category_name, category_info in categories_data.items():
-            logger.info(f"正在抓取 {category_info['name']} 分类，共 {len(category_info['items'])} 部剧集")
+            logger.info(f"准备抓取 {category_info['name']} 分类，共 {len(category_info['items'])} 部剧集")
             
             for item in category_info['items']:
-                detail_count += 1
                 series_id = item['series_id']
                 
                 if not series_id:
@@ -1997,20 +2470,549 @@ class YatuTVCrawler:
                     logger.warning(f"跳过包含无效字符的剧集ID '{series_id}': {item['title']}")
                     continue
                 
-                logger.info(f"[{detail_count}/{total_count}] 正在抓取: {item['title']}")
-                
-                # 抓取详情，传递分类信息
-                series_info = self.crawl_series_detail(item['url'], series_id, item['category'])
-                if series_info:
-                    self.save_series_data(series_info)
-                    logger.info(f"✓ 完成: {item['title']} ({len(series_info['episodes'])}集)")
-                else:
-                    logger.error(f"✗ 失败: {item['title']}")
-                
-                # 延时，避免请求过快
-                time.sleep(1)
+                all_series.append({
+                    'item': item,
+                    'category_name': category_name
+                })
+        
+        # 使用线程池进行并发抓取
+        self.crawl_series_with_threads(all_series, total_count)
+        
+        # 输出统计信息
+        logger.info("=== 抓取统计 ===")
+        logger.info(f"跳过的newplay.asp链接: {self.stats['skipped_newplay']} 个")
+        logger.info(f"总剧集数量: {self.stats['total_series']} 个")
+        logger.info(f"成功抓取剧集: {self.stats['successful_series']} 个")
+        logger.info(f"失败剧集数量: {self.stats['total_series'] - self.stats['successful_series']} 个")
+        
+        # 错误统计
+        if self.stats['total_failures'] > 0:
+            logger.info("=== 错误统计 ===")
+            logger.info(f"总失败次数: {self.stats['total_failures']}")
+            logger.info(f"网络错误: {self.stats['network_errors']}")
+            logger.info(f"认证错误: {self.stats['auth_errors']}")
+            logger.info(f"频率限制: {self.stats['rate_limit_errors']}")
+            logger.info(f"服务器错误: {self.stats['server_errors']}")
+            
+            # 错误分析建议
+            if self.stats['auth_errors'] > 0:
+                logger.warning("建议: 检测到认证错误，可能需要登录或处理验证码")
+            if self.stats['rate_limit_errors'] > 0:
+                logger.warning("建议: 检测到频率限制，建议增加请求间隔时间")
+            if self.stats['server_errors'] > 0:
+                logger.warning("建议: 检测到服务器错误，服务器可能维护中，建议稍后重试")
+            if self.stats['network_errors'] > 0:
+                logger.warning("建议: 检测到网络错误，请检查网络连接")
         
         logger.info("=== 抓取完成 ===")
+
+    def crawl_series_with_threads(self, all_series, total_count):
+        """使用多线程抓取剧集详情"""
+        completed_count = 0
+        failed_count = 0
+        
+        def crawl_single_series(series_data):
+            """单个线程抓取剧集的函数"""
+            nonlocal completed_count, failed_count
+            
+            item = series_data['item']
+            category_name = series_data['category_name']
+            series_id = item['series_id']
+            
+            # 为每个线程创建独立的session
+            thread_session = requests.Session()
+            thread_session.headers.update(self.session.headers)
+            
+            try:
+                with self.progress_lock:
+                    completed_count += 1
+                    current_count = completed_count
+                    logger.info(f"[{current_count}/{total_count}] 正在抓取: {item['title']}")
+                    logger.info(f"详情页地址: {item['url']}")
+                
+                # 抓取详情，传递分类信息和session
+                series_info = self.crawl_series_detail(item['url'], series_id, item['category'], thread_session)
+                
+                if series_info:
+                    # 保存数据（需要线程锁保护）
+                    with self.thread_lock:
+                        self.save_series_data(series_info)
+                        self.stats['successful_series'] += 1
+                    
+                    with self.progress_lock:
+                        logger.info(f"✓ 完成: {item['title']} ({len(series_info['episodes'])}集)")
+                    return True
+                else:
+                    with self.progress_lock:
+                        logger.error(f"✗ 失败: {item['title']}")
+                    with self.thread_lock:
+                        failed_count += 1
+                    return False
+                    
+            except Exception as e:
+                with self.progress_lock:
+                    logger.error(f"✗ 抓取异常: {item['title']} - {str(e)}")
+                with self.thread_lock:
+                    failed_count += 1
+                return False
+        
+        # 使用线程池执行抓取任务
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # 提交所有任务
+            future_to_series = {
+                executor.submit(crawl_single_series, series_data): series_data 
+                for series_data in all_series
+            }
+            
+            # 处理完成的任务
+            for future in as_completed(future_to_series):
+                series_data = future_to_series[future]
+                try:
+                    success = future.result()
+                    if not success:
+                        with self.thread_lock:
+                            self.stats['total_failures'] += 1
+                except Exception as e:
+                    with self.progress_lock:
+                        logger.error(f"线程执行异常: {series_data['item']['title']} - {str(e)}")
+                    with self.thread_lock:
+                        self.stats['total_failures'] += 1
+        
+        logger.info(f"多线程抓取完成！成功: {self.stats['successful_series']}, 失败: {failed_count}")
+
+    def _extract_iframe_from_js(self, html):
+        """从JavaScript中提取iframe链接"""
+        try:
+            import re
+            from urllib.parse import urljoin, unquote
+            
+            logger.debug("正在从JavaScript中提取iframe链接...")
+            
+            # 查找所有script标签
+            script_patterns = [
+                r'<script[^>]*>(.*?)</script>',  # 内联脚本
+                r'src\s*=\s*["\']([^"\']*\.js[^"\']*)["\']',  # 外部JS文件
+            ]
+            
+            # 方法1: 查找iframe相关的JavaScript代码
+            iframe_js_patterns = [
+                # 常见的iframe设置模式
+                r'iframe\.src\s*=\s*["\']([^"\']*)["\']',
+                r'iframe\.setAttribute\(["\']src["\'],\s*["\']([^"\']*)["\']\)',
+                r'playframe\.src\s*=\s*["\']([^"\']*)["\']',
+                r'playframe\.setAttribute\(["\']src["\'],\s*["\']([^"\']*)["\']\)',
+                r'document\.getElementById\(["\']playframe["\']\)\.src\s*=\s*["\']([^"\']*)["\']',
+                r'document\.getElementById\(["\']playframe["\']\)\.setAttribute\(["\']src["\'],\s*["\']([^"\']*)["\']\)',
+                
+                # 变量赋值模式
+                r'var\s+\w+\s*=\s*["\']([^"\']*jx\.xmflv\.cc[^"\']*)["\']',
+                r'let\s+\w+\s*=\s*["\']([^"\']*jx\.xmflv\.cc[^"\']*)["\']',
+                r'const\s+\w+\s*=\s*["\']([^"\']*jx\.xmflv\.cc[^"\']*)["\']',
+                
+                # 函数调用模式
+                r'loadIframe\(["\']([^"\']*)["\']\)',
+                r'loadPlayer\(["\']([^"\']*)["\']\)',
+                r'setIframeSrc\(["\']([^"\']*)["\']\)',
+                
+                # 通用URL模式（包含常见播放器域名）
+                r'["\'](https?://[^"\']*(?:jx\.xmflv\.cc|player\.|play\.|iframe\.)[^"\']*)["\']',
+                r'["\'](https?://[^"\']*\?url=[^"\']*)["\']',
+                
+                # 更广泛的URL模式
+                r'["\'](https?://[^"\']*\.cc[^"\']*)["\']',
+                r'["\'](https?://[^"\']*\.com[^"\']*\?url=[^"\']*)["\']',
+                r'["\'](https?://[^"\']*\.net[^"\']*\?url=[^"\']*)["\']',
+                
+                # 相对路径模式
+                r'["\'](/[^"\']*\.php[^"\']*\?url=[^"\']*)["\']',
+                r'["\'](/[^"\']*\.asp[^"\']*\?url=[^"\']*)["\']',
+            ]
+            
+            # 搜索所有script标签内容
+            scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL | re.IGNORECASE)
+            logger.debug(f"找到 {len(scripts)} 个script标签")
+            
+            for i, script_content in enumerate(scripts):
+                logger.debug(f"分析script[{i}]内容，长度: {len(script_content)}")
+                
+                # 尝试各种模式匹配
+                for j, pattern in enumerate(iframe_js_patterns):
+                    matches = re.findall(pattern, script_content, re.IGNORECASE)
+                    for match in matches:
+                        if match and len(match) > 10:  # 确保URL长度合理
+                            # URL解码
+                            decoded_url = unquote(match)
+                            logger.debug(f"从JavaScript中找到URL: {decoded_url}")
+                            
+                            # 验证是否是有效的播放器URL
+                            if self._is_valid_player_url(decoded_url):
+                                logger.info(f"✓ 从JavaScript中提取到有效播放器URL: {decoded_url}")
+                                return decoded_url
+                            else:
+                                logger.debug(f"URL验证失败: {decoded_url}")
+            
+            # 方法2: 查找动态生成的iframe
+            dynamic_iframe_patterns = [
+                r'document\.write\(["\']<iframe[^>]*src=["\']([^"\']*)["\']',
+                r'innerHTML\s*=\s*["\']<iframe[^>]*src=["\']([^"\']*)["\']',
+                r'appendChild\(.*iframe.*src=["\']([^"\']*)["\']',
+            ]
+            
+            for pattern in dynamic_iframe_patterns:
+                matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    if match and len(match) > 10:
+                        decoded_url = unquote(match)
+                        if self._is_valid_player_url(decoded_url):
+                            logger.info(f"✓ 从动态iframe中提取到URL: {decoded_url}")
+                            return decoded_url
+            
+            # 方法3: 查找AJAX请求中的URL
+            ajax_patterns = [
+                r'url\s*:\s*["\']([^"\']*jx\.xmflv\.cc[^"\']*)["\']',
+                r'data\s*:\s*\{[^}]*url\s*:\s*["\']([^"\']*)["\']',
+            ]
+            
+            for pattern in ajax_patterns:
+                matches = re.findall(pattern, html, re.IGNORECASE)
+                for match in matches:
+                    if match and len(match) > 10:
+                        decoded_url = unquote(match)
+                        if self._is_valid_player_url(decoded_url):
+                            logger.info(f"✓ 从AJAX请求中提取到URL: {decoded_url}")
+                            return decoded_url
+            
+            logger.debug("JavaScript中未找到有效的iframe链接")
+            return None
+            
+        except Exception as e:
+            logger.error(f"从JavaScript提取iframe链接失败: {e}")
+            return None
+    
+    def _is_error_page(self, html):
+        """检查是否是错误页面"""
+        if not html:
+            return True
+        
+        # 检查常见的错误页面标识
+        error_indicators = [
+            '访问被拒绝', 'Access Denied', '403 Forbidden', '404 Not Found',
+            '500 Internal Server Error', '502 Bad Gateway', '503 Service Unavailable',
+            '访问过于频繁', '请求过于频繁', 'rate limit', 'too many requests',
+            '服务器维护', '系统维护', 'maintenance', 'under construction',
+            '网络错误', '连接超时', 'timeout', 'connection error'
+        ]
+        
+        html_lower = html.lower()
+        
+        # 优先检查是否包含剧集链接（这是最重要的判断标准）
+        if '/m' in html and ('play' in html or 'span_flv' in html):
+            return False
+        
+        # 智能判断：如果页面包含正常的剧集内容，则认为是正常页面
+        normal_content_indicators = [
+            'span_flv', 'js_flv', 'flv_yp',  # 播放链接容器
+            'play0-', 'play1-', 'play2-',    # 播放链接格式
+            '剧集', '集数', '播放',           # 中文内容标识
+            'title', '剧情', '简介'           # 页面内容标识
+        ]
+        
+        # 检查是否包含正常内容标识
+        normal_content_count = 0
+        for indicator in normal_content_indicators:
+            if indicator in html_lower:
+                normal_content_count += 1
+        
+        # 如果页面长度足够且包含多个正常内容标识，认为是正常页面
+        if len(html) > 1000 and normal_content_count >= 2:
+            return False
+        
+        # 检查是否包含错误关键词（排除JavaScript代码中的正常用法）
+        for indicator in error_indicators:
+            if indicator.lower() in html_lower:
+                # 检查是否是JavaScript代码中的正常用法
+                if indicator.lower() == 'timeout':
+                    # 检查是否是setTimeout等正常用法
+                    if 'settimeout' in html_lower or 'settimeout(' in html_lower:
+                        continue  # 跳过正常的setTimeout用法
+                return True
+        
+        # 改进的认证错误检测：检查是否真的需要登录
+        auth_error_indicators = [
+            '请登录后访问', '请先登录', '登录后才能访问', '需要登录',
+            '请验证码', '请输入验证码', '验证码错误',
+            '访问受限', '权限不足', '需要权限',
+            '尚未登录，无法显示', '请先登录才能'
+        ]
+        
+        # 检查是否包含认证错误关键词
+        for indicator in auth_error_indicators:
+            if indicator.lower() in html_lower:
+                return True
+        
+        return False
+    
+    def _analyze_error_page(self, html):
+        """分析错误页面类型"""
+        html_lower = html.lower()
+        
+        # 改进的认证错误检测：更精确的认证错误判断
+        auth_error_indicators = [
+            '请登录后访问', '请先登录', '登录后才能访问', '需要登录',
+            '请验证码', '请输入验证码', '验证码错误',
+            '访问受限', '权限不足', '需要权限',
+            '尚未登录，无法显示', '请先登录才能'
+        ]
+        
+        # 检查是否真的需要登录（而不是页面中只是包含"登录"字样）
+        if any(keyword in html_lower for keyword in auth_error_indicators):
+            return 'auth_error'
+        
+        # 频率限制错误
+        if any(keyword in html_lower for keyword in ['访问过于频繁', '请求过于频繁', 'rate limit', 'too many requests']):
+            return 'rate_limit_error'
+        
+        # 服务器错误
+        if any(keyword in html_lower for keyword in ['500', '502', '503', '服务器维护', '系统维护', 'maintenance']):
+            return 'server_error'
+        
+        # 访问被拒绝
+        if any(keyword in html_lower for keyword in ['访问被拒绝', 'access denied', '403', '404']):
+            return 'access_denied'
+        
+        return 'unknown_error'
+    
+    def _analyze_exception(self, exception):
+        """分析异常类型"""
+        exception_str = str(exception).lower()
+        
+        # 网络连接错误
+        if any(keyword in exception_str for keyword in ['connection', 'timeout', 'network', 'dns']):
+            return 'network_error'
+        
+        # HTTP状态码错误
+        if '403' in exception_str:
+            return 'auth_error'
+        elif '429' in exception_str:
+            return 'rate_limit_error'
+        elif '500' in exception_str or '502' in exception_str or '503' in exception_str:
+            return 'server_error'
+        elif '404' in exception_str:
+            return 'not_found'
+        
+        return 'unknown_error'
+    
+    def _handle_error(self, error_type, url, error_msg=None, series_id=None, episode_id=None, html_content=None):
+        """处理错误"""
+        self.stats['consecutive_failures'] += 1
+        self.stats['total_failures'] += 1
+        
+        # 根据错误类型更新统计
+        if error_type == 'network_error':
+            self.stats['network_errors'] += 1
+            logger.warning(f"网络错误: {url}")
+        elif error_type == 'auth_error':
+            self.stats['auth_errors'] += 1
+            logger.error(f"认证错误: {url} - 可能需要登录")
+        elif error_type == 'rate_limit_error':
+            self.stats['rate_limit_errors'] += 1
+            logger.error(f"频率限制: {url} - 请求过于频繁")
+        elif error_type == 'server_error':
+            self.stats['server_errors'] += 1
+            logger.error(f"服务器错误: {url}")
+        else:
+            logger.error(f"未知错误: {url} - {error_msg}")
+        
+        # 保存错误页面到err文件夹
+        if html_content and series_id:
+            self._save_error_page(series_id, episode_id, error_type, url, html_content, error_msg)
+        
+        # 检查是否需要暂停
+        if self.stats['consecutive_failures'] >= self.error_config['max_consecutive_failures']:
+            self._handle_consecutive_failures()
+    
+    def _handle_consecutive_failures(self):
+        """处理连续失败"""
+        logger.error(f"连续失败 {self.stats['consecutive_failures']} 次，跳过当前剧集")
+        
+        # 分析失败原因
+        if self.stats['auth_errors'] > 0:
+            logger.error("检测到认证错误，可能需要登录或验证码")
+        if self.stats['rate_limit_errors'] > 0:
+            logger.error("检测到频率限制，需要降低请求频率")
+        if self.stats['server_errors'] > 0:
+            logger.error("检测到服务器错误，服务器可能维护中")
+        if self.stats['network_errors'] > 0:
+            logger.error("检测到网络错误，请检查网络连接")
+        
+        # 暂停一段时间
+        delay = self.error_config['retry_delay']
+        logger.info(f"暂停 {delay} 秒后继续下一个剧集...")
+        time.sleep(delay)
+        
+        # 重置连续失败计数
+        self.stats['consecutive_failures'] = 0
+    
+    def _save_error_page(self, series_id, episode_id, error_type, url, html_content, error_msg=None):
+        """保存错误页面到err文件夹"""
+        try:
+            # 生成时间戳
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # 构建文件名
+            if episode_id:
+                filename = f"{timestamp}_{series_id}_{episode_id}.html"
+            else:
+                filename = f"{timestamp}_{series_id}.html"
+            
+            # 构建文件路径
+            file_path = os.path.join(self.err_dir, filename)
+            
+            # 分析页面类型
+            page_type = self._analyze_page_type(url, html_content)
+            
+            # 构建错误信息HTML
+            error_html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>错误页面 - {series_id}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .error-info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .error-type {{ color: #dc3545; font-weight: bold; }}
+        .url {{ color: #007bff; word-break: break-all; }}
+        .timestamp {{ color: #6c757d; font-size: 0.9em; }}
+        .page-type {{ color: #28a745; font-weight: bold; }}
+        .debug-info {{ background: #e9ecef; padding: 10px; border-radius: 3px; margin: 10px 0; }}
+        .original-content {{ border: 1px solid #ddd; padding: 10px; background: #fff; }}
+    </style>
+</head>
+<body>
+    <div class="error-info">
+        <h2>错误信息</h2>
+        <p><strong>错误类型:</strong> <span class="error-type">{error_type}</span></p>
+        <p><strong>剧集ID:</strong> {series_id}</p>
+        <p><strong>集数:</strong> {episode_id if episode_id else 'N/A'}</p>
+        <p><strong>URL:</strong> <span class="url">{url}</span></p>
+        <p><strong>页面类型:</strong> <span class="page-type">{page_type}</span></p>
+        <p><strong>时间:</strong> <span class="timestamp">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span></p>
+        {f'<p><strong>错误消息:</strong> {error_msg}</p>' if error_msg else ''}
+    </div>
+    
+    <div class="debug-info">
+        <h3>调试信息</h3>
+        <p><strong>URL分析:</strong></p>
+        <ul>
+            <li>完整URL: {url}</li>
+            <li>URL路径: {url.split('/')[-2] if len(url.split('/')) > 2 else 'N/A'}</li>
+            <li>是否包含play: {'是' if '/play' in url else '否'}</li>
+            <li>是否包含newplay.asp: {'是' if 'newplay.asp' in url else '否'}</li>
+            <li>URL格式验证: {'通过' if self._is_valid_play_url(url) else '失败'}</li>
+        </ul>
+        <p><strong>页面内容分析:</strong></p>
+        <ul>
+            <li>页面长度: {len(html_content) if html_content else 0} 字符</li>
+            <li>是否包含剧集信息: {'是' if html_content and ('span_flv' in html_content or 'js_flv' in html_content) else '否'}</li>
+            <li>是否包含播放器: {'是' if html_content and 'playframe' in html_content else '否'}</li>
+            <li>是否包含认证错误: {'是' if html_content and ('登录' in html_content or '认证' in html_content) else '否'}</li>
+        </ul>
+    </div>
+    
+    <div class="original-content">
+        <h3>原始页面内容:</h3>
+        <pre>{html_content}</pre>
+    </div>
+</body>
+</html>"""
+            
+            # 保存文件
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(error_html)
+            
+            logger.info(f"错误页面已保存: {file_path}")
+            
+        except Exception as e:
+            logger.error(f"保存错误页面失败: {e}")
+    
+    def _analyze_page_type(self, url, html_content):
+        """分析页面类型"""
+        try:
+            # 分析URL
+            if '/play' in url:
+                return "播放页面"
+            elif '/m' in url and not '/play' in url:
+                return "剧集详情页"
+            elif 'newplay.asp' in url:
+                return "newplay.asp页面"
+            else:
+                return "未知页面类型"
+        except:
+            return "页面类型分析失败"
+    
+    def _is_valid_play_url(self, url):
+        """验证是否是有效的播放链接格式"""
+        try:
+            if not url:
+                return False
+            
+            # 检查是否是 /m数字id/play片源id-剧集集数.html 格式
+            if re.match(r'^/m\d+/play\d+-\d+\.html$', url):
+                return True
+            
+            # 检查是否是 play数字-数字.html 格式（相对路径）
+            if re.match(r'^play\d+-\d+\.html$', url):
+                return True
+            
+            # 检查是否是完整的URL格式
+            if url.startswith('https://www.yatu.tv/m') and '/play' in url and '.html' in url:
+                # 提取路径部分进行验证
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                path = parsed.path
+                if re.match(r'^/m\d+/play\d+-\d+\.html$', path):
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"播放链接验证失败: {e}")
+            return False
+    
+    def _is_valid_player_url(self, url):
+        """验证是否是有效的播放器URL"""
+        try:
+            if not url or len(url) < 10:
+                return False
+            
+            # 检查是否包含常见的播放器域名
+            player_domains = [
+                'jx.xmflv.cc',
+                'jx.player.com',
+                'player.',
+                'play.',
+                'iframe.',
+                'video.',
+                'm3u8',
+                'mp4',
+                'flv'
+            ]
+            
+            url_lower = url.lower()
+            for domain in player_domains:
+                if domain in url_lower:
+                    return True
+            
+            # 检查是否是HTTP/HTTPS URL
+            if url.startswith(('http://', 'https://')):
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"URL验证失败: {e}")
+            return False
 
 if __name__ == "__main__":
     crawler = YatuTVCrawler()
