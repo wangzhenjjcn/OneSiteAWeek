@@ -14,6 +14,9 @@ import re
 from database_manager import YatuTVDatabase
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import mimetypes
+import psutil
+import gc
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -83,9 +86,20 @@ class YatuTVCrawler:
         })
         
         # 多线程配置
-        self.max_workers = 10  # 最大线程数
+        self.max_series_workers = 10  # 剧集级最大线程数
+        self.max_episode_workers = 10  # 集数级最大线程数
         self.thread_lock = threading.Lock()  # 线程锁，用于保护共享资源
         self.progress_lock = threading.Lock()  # 进度锁，用于保护进度输出
+        self.episode_thread_pool = None  # 集数级线程池
+        self.episode_queue = []  # 集数任务队列
+        self.episode_results = {}  # 集数分析结果
+        
+        # 内存优化配置
+        self.memory_limit_mb = 1024  # 内存限制（MB）
+        self.batch_size = 5  # 批处理大小
+        self.gc_interval = 10  # 垃圾回收间隔（处理的剧集数）
+        self.save_interval = 5  # 保存间隔（处理的剧集数）
+        self.processed_count = 0  # 已处理剧集计数
     
     def get_page(self, url, series_id=None, episode_id=None, session=None):
         """获取页面内容"""
@@ -261,9 +275,13 @@ class YatuTVCrawler:
                     base_url = category_url.replace('.htm', '')
                     page_url = f"{base_url}/{page}.html"
                 else:
+                    # 新的分页格式：/m-dm/387.html, /m-dy/852.html, /m-tv/627.html
                     page_url = f"{category_url.rstrip('/')}/{page}.html"
             
             logger.info(f"正在抓取第 {page} 页: {page_url}")
+            
+            # 设置当前URL用于最后一页检测
+            self.current_url = page_url
             
             html = self.get_page(page_url)
             if not html:
@@ -287,7 +305,7 @@ class YatuTVCrawler:
                 if len(items) > 3:
                     logger.info(f"  ... 还有 {len(items)-3} 个剧集")
             
-            # 检查是否到达最后一页（页脚翻页变灰）
+            # 检查是否到达最后一页
             if self._is_last_page(soup):
                 logger.info(f"到达最后一页，停止抓取")
                 break
@@ -358,43 +376,55 @@ class YatuTVCrawler:
         return items
     
     def _is_last_page(self, soup):
-        """检查是否是最后一页（页脚翻页变灰）"""
-        # 方法1: 查找页脚翻页链接
-        pagination = soup.find('div', class_='pagination') or soup.find('div', class_='page')
-        if pagination:
-            # 查找"下一页"或"下页"链接
-            next_links = pagination.find_all('a', text=re.compile(r'下一页|下页|>'))
-            for link in next_links:
-                # 检查链接是否变灰（disabled状态）
-                if 'disabled' in link.get('class', []) or 'gray' in link.get('class', []):
-                    return True
-                # 检查链接是否不可点击
-                if not link.get('href') or link.get('href') == '#':
-                    return True
+        """检查是否是最后一页"""
+        # 方法1: 检查页面内容是否为空（没有找到任何剧集链接）
+        series_links = soup.find_all('a', href=re.compile(r'/m\d+/'))
+        if not series_links:
+            return True
         
-        # 方法2: 查找所有分页链接，检查是否有下一页
-        all_pagination_links = soup.find_all('a', href=re.compile(r'\d+\.html'))
-        if all_pagination_links:
-            # 获取当前页面的数字
-            current_page_numbers = []
-            for link in all_pagination_links:
-                href = link.get('href', '')
-                page_match = re.search(r'(\d+)\.html', href)
-                if page_match:
-                    current_page_numbers.append(int(page_match.group(1)))
+        # 方法2: 根据翻页链接数量判断
+        # 查找所有"翻页"链接
+        next_page_links = []
+        all_links = soup.find_all('a', href=True)
+        for link in all_links:
+            text = link.get_text(strip=True)
+            if '翻页' in text:
+                next_page_links.append({
+                    'text': text,
+                    'href': link.get('href', '')
+                })
+        
+        # 如果只有一个翻页链接，说明是第一页或最后一页
+        if len(next_page_links) == 1:
+            next_link = next_page_links[0]
+            next_href = next_link['href']
             
-            # 如果当前页面数字是最大的，说明是最后一页
-            if current_page_numbers and max(current_page_numbers) == max(current_page_numbers):
+            # 如果翻页链接指向的是当前页面或首页，说明是最后一页
+            if next_href.endswith('/') or next_href == '' or next_href == '#':
                 return True
+            
+            # 检查是否指向较小的页码（说明是最后一页）
+            page_match = re.search(r'(\d+)\.html', next_href)
+            if page_match:
+                next_page_num = int(page_match.group(1))
+                # 从当前URL中提取当前页码
+                current_page_match = re.search(r'(\d+)\.html', self.current_url)
+                if current_page_match:
+                    current_page_num = int(current_page_match.group(1))
+                    if next_page_num < current_page_num:
+                        return True
+                else:
+                    # 如果当前URL没有页码，说明是第一页
+                    return False
         
         # 方法3: 检查是否有"没有更多内容"的提示
         no_more_texts = soup.find_all(string=re.compile(r'没有更多|已到最后一页|没有数据|暂无数据'))
         if no_more_texts:
             return True
         
-        # 方法4: 检查页面内容是否为空（没有找到任何剧集链接）
-        series_links = soup.find_all('a', href=re.compile(r'/m\d+/'))
-        if not series_links:
+        # 方法4: 检查页面内容是否明显少于正常页面（可能是最后一页）
+        # 正常情况下每页应该有20-40个剧集
+        if len(series_links) < 10:
             return True
         
         return False
@@ -507,6 +537,249 @@ class YatuTVCrawler:
             logger.error(f"查找站外片源失败: {e}")
             return []
     
+    def crawl_series_detail_with_episode_pool(self, series_url, series_id, category_type=None, session=None):
+        """使用集数级线程池抓取剧集详情"""
+        logger.info(f"正在抓取剧集详情: {series_url}")
+        logger.info(f"剧集ID: {series_id}, 分类: {category_type}")
+        
+        # 检查数据库和data目录的状态
+        db_has_series = self.db.is_series_crawled(series_id)
+        existing_data = self.check_existing_data(series_id)
+        
+        # 确定是否需要抓取和生成data文件
+        need_crawl = True
+        need_generate_data = True
+        
+        if db_has_series and existing_data:
+            logger.info(f"剧集 {series_id} 在数据库和data目录中都存在，跳过抓取")
+            need_crawl = False
+            need_generate_data = False
+        elif db_has_series and not existing_data:
+            logger.info(f"剧集 {series_id} 在数据库中存在但data目录中缺失，需要从数据库生成data文件")
+            need_crawl = False
+            need_generate_data = True
+        elif not db_has_series and existing_data:
+            logger.info(f"剧集 {series_id} 在data目录中存在但数据库中缺失，需要更新数据库")
+            need_crawl = True
+            need_generate_data = False
+        else:
+            logger.info(f"剧集 {series_id} 在数据库和data目录中都不存在，需要完整抓取")
+            need_crawl = True
+            need_generate_data = True
+        
+        # 如果不需要抓取但需要生成data文件，从数据库生成
+        if not need_crawl and need_generate_data:
+            logger.info(f"从数据库生成剧集 {series_id} 的data文件")
+            series_info = self._generate_data_from_database(series_id, category_type)
+            if series_info:
+                self.save_series_data(series_info)
+                return series_info
+            else:
+                logger.warning(f"无法从数据库生成剧集 {series_id} 的数据，将进行完整抓取")
+                need_crawl = True
+                need_generate_data = True
+        
+        # 使用传入的session或默认session
+        current_session = session if session else self.session
+        html = self.get_page(series_url, series_id=series_id, session=current_session)
+        if not html:
+            return None
+        
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # 查找剧集列表并分析剧集数量和线路
+        episodes = []
+        episode_patterns = []
+        
+        # 首先查找现有的播放链接以了解剧集结构
+        # 方法1: 查找特定的播放容器
+        span_flv = soup.find('span', id='span_flv')
+        if not span_flv:
+            js_flv_span = soup.find('span', id='js_flv')
+            flv_yp0_span = soup.find('span', id='flv_yp0')
+            span_flv = flv_yp0_span if flv_yp0_span else js_flv_span
+        
+        if span_flv:
+            a_tags = span_flv.find_all('a', href=True)
+            for a_tag in a_tags:
+                episode_text = a_tag.get_text(strip=True)
+                episode_url = a_tag.get('href', '')
+                
+                if episode_text and episode_url and 'play' in episode_url:
+                    episode_patterns.append((episode_text, episode_url))
+        
+        # 方法2: 如果方法1没有找到，使用更全面的查找
+        if not episode_patterns:
+            logger.info("未在特定容器中找到播放链接，使用全面查找方法")
+            
+            # 查找所有play数字-数字.html格式的链接
+            play_links = soup.find_all('a', href=re.compile(r'play\d+-\d+\.html'))
+            for link in play_links:
+                episode_text = link.get_text(strip=True)
+                episode_url = link.get('href', '')
+                
+                if episode_text and episode_url:
+                    # 验证链接格式
+                    if self._is_valid_play_url(episode_url):
+                        episode_patterns.append((episode_text, episode_url))
+                        logger.debug(f"找到播放链接: {episode_text} -> {episode_url}")
+        
+        # 方法3: 查找id包含cs的元素中的播放链接
+        if not episode_patterns:
+            logger.info("未找到标准播放链接，查找cs元素中的链接")
+            cs_elements = soup.find_all(attrs={"id": re.compile(r"cs\d*")})
+            for element in cs_elements:
+                links = element.find_all('a')
+                for link in links:
+                    episode_text = link.get_text(strip=True)
+                    episode_url = link.get('href', '')
+                    
+                    if episode_text and episode_url and 'play' in episode_url:
+                        if self._is_valid_play_url(episode_url):
+                            episode_patterns.append((episode_text, episode_url))
+                            logger.debug(f"在cs元素中找到播放链接: {episode_text} -> {episode_url}")
+        
+        if not episode_patterns:
+            logger.error("未找到任何播放链接，保存页面用于调试")
+            self.save_error_page(html, series_id, "no_play_links")
+            return None
+        
+        logger.info(f"总共找到 {len(episode_patterns)} 个播放链接模式")
+        
+        # 分析剧集规律
+        max_episode = 0
+        available_lines = set()
+        
+        for episode_text, episode_url in episode_patterns:
+            # 从URL提取线路和集数: play0-123.html
+            play_match = re.search(r'play(\d+)-(\d+)\.html', episode_url)
+            if play_match:
+                line_id = int(play_match.group(1))
+                episode_num = int(play_match.group(2))
+                available_lines.add(line_id)
+                max_episode = max(max_episode, episode_num)
+        
+        if max_episode == 0:
+            logger.error("无法分析剧集规律")
+            return None
+        
+        logger.info(f"发现剧集规律: 最大集数 {max_episode}, 可用线路 {sorted(available_lines)}")
+        
+        # 选择最佳线路（通常线路0最稳定）
+        best_line = 0 if 0 in available_lines else min(available_lines)
+        logger.info(f"生成完整剧集列表: {max_episode} 集，使用线路 {best_line}")
+        
+        # 生成完整的剧集列表
+        for episode_num in range(1, max_episode + 1):
+            episode_url = f"play{best_line}-{episode_num}.html"
+            episode_text = f"第{episode_num:02d}集"
+            
+            # 检查是否已存在
+            if not self.db.is_episode_crawled(series_id, episode_num):
+                episodes.append({
+                    'episode': episode_num,
+                    'title': episode_text,
+                    'url': episode_url,
+                    'playframe_url': '',
+                    'note': ''
+                })
+            else:
+                logger.info(f"第{episode_num:02d}集在数据库和data中都存在，跳过")
+        
+        if not episodes:
+            logger.warning("所有集数都已存在，无需抓取")
+            # 从数据库获取现有数据
+            series_info = self._generate_data_from_database(series_id, category_type)
+            if series_info:
+                return series_info
+            else:
+                logger.error("无法从数据库获取现有数据")
+                return None
+        
+        logger.info(f"找到 {len(episodes)} 集")
+        
+        # 使用集数级线程池分析详细页面
+        self.analyze_episodes_with_thread_pool(episodes, series_id, current_session)
+        
+        # 保存详情页HTML到数据库
+        self.db.save_detail_html(series_id, html)
+        logger.info(f"已保存详情页HTML到数据库: {series_id}")
+        
+        # 下载并保存封面图片
+        cover_url = self.extract_cover_image(soup)
+        if cover_url:
+            self.download_cover_image(cover_url, series_id, current_session)
+        
+        # 构建完整的剧集信息
+        series_info = {
+            'series_id': series_id,
+            'title': self.extract_title(soup),
+            'url': series_url,
+            'description': self.extract_description(soup),
+            'category': category_type,
+            'year': self.extract_year(soup),
+            'country': self.extract_country(soup),
+            'language': self.extract_language(soup),
+            'director': self.extract_director(soup),
+            'actors': self.extract_actors(soup),
+            'episodes': episodes,
+            'cover_image': cover_url if cover_url else ""
+        }
+        
+        # 保存到数据库
+        self.db.save_series(series_info)
+        for episode in episodes:
+            self.db.save_episode(series_id, episode)
+        
+        return series_info
+
+    def analyze_episodes_with_thread_pool(self, episodes, series_id, session):
+        """使用集数级线程池分析剧集详细页面"""
+        logger.info("正在分析视频源信息和尝试获取m3u8地址...")
+        
+        def analyze_single_episode(episode):
+            """分析单个集数的详细页面"""
+            episode_num = episode['episode']
+            episode_url = episode['url']
+            
+            # 检查是否已存在
+            if self.db.is_episode_crawled(series_id, episode_num):
+                logger.info(f"第{episode_num:02d}集在数据库中存在但data中缺失，需要更新")
+            else:
+                logger.info(f"第{episode_num:02d}集在数据库和data中都不存在，需要抓取")
+            
+            logger.info(f"正在分析第{episode_num:02d}集的播放地址...")
+            
+            # 构建完整的播放URL
+            play_url = urllib.parse.urljoin(f"https://www.yatu.tv/m{series_id}/", episode_url)
+            
+            # 获取playframe地址
+            real_url = self.get_playframe_url(play_url, series_id=series_id, episode_id=episode_num, session=session)
+            if real_url:
+                episode['playframe_url'] = real_url
+                logger.info(f"✓ 第{episode_num:02d}集解析成功: {real_url}")
+                return True
+            else:
+                logger.warning(f"✗ 第{episode_num:02d}集解析失败")
+                return False
+        
+        # 使用集数级线程池分析所有集数
+        futures = []
+        for episode in episodes:
+            future = self.episode_thread_pool.submit(analyze_single_episode, episode)
+            futures.append(future)
+        
+        # 等待所有集数分析完成
+        successful_count = 0
+        for future in as_completed(futures):
+            try:
+                if future.result():
+                    successful_count += 1
+            except Exception as e:
+                logger.error(f"集数分析异常: {str(e)}")
+        
+        logger.info(f"✓ 成功获取到 {successful_count} 集的播放地址")
+
     def crawl_series_detail(self, series_url, series_id, category_type=None, session=None):
         """抓取剧集详情页面"""
         logger.info(f"正在抓取剧集详情: {series_url}")
@@ -1998,9 +2271,17 @@ class YatuTVCrawler:
             <div class="series-info">
                 <div class="cover-container">"""
         
-        if cover_image:
+        # 检查是否有本地保存的封面图片
+        cover_filename = None
+        for ext in ['.jpg', '.png', '.gif', '.webp']:
+            cover_path = os.path.join(series_dir, f"cover{ext}")
+            if os.path.exists(cover_path):
+                cover_filename = f"cover{ext}"
+                break
+        
+        if cover_filename:
             html_content += f'''
-                    <img src="{cover_image}" alt="{title}" class="cover-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+                    <img src="{cover_filename}" alt="{title}" class="cover-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
                     <div class="no-cover" style="display:none">
                         <div>暂无封面<br>📺</div>
                     </div>'''
@@ -2413,7 +2694,7 @@ class YatuTVCrawler:
         
         logger.info(f"HTML 文件已生成: {html_file}")
     
-    def run(self, use_category_pages=True):
+    def run(self, use_category_pages=True, use_multithread_crawl=False, check_missing=True):
         """主运行函数"""
         logger.info("=== 雅图TV抓取工具启动 ===")
         logger.info("目标网站: https://www.yatu.tv")
@@ -2421,62 +2702,116 @@ class YatuTVCrawler:
         logger.info("数据保存: data/ 目录")
         logger.info("=" * 50)
         
-        if use_category_pages:
-            # 使用分类页面抓取
-            logger.info("使用分类页面抓取模式")
-            categories_data = self.crawl_all_categories()
-        else:
-            # 使用首页抓取（保留原有功能）
-            logger.info("使用首页抓取模式")
-            categories_data = self.crawl_homepage()
-        
-        if not categories_data:
-            logger.error("抓取失败")
+        if use_multithread_crawl:
+            # 使用多线程剧集采集模式
+            logger.info("使用多线程剧集采集模式")
+            self.run_multithread_crawl()
             return
         
-        # 2. 生成首页 HTML
-        self.generate_index_html(categories_data)
+        # 第一步：抓取最新内容（首页）
+        logger.info("=== 第一步：抓取最新内容 ===")
+        logger.info("使用首页抓取模式获取最新剧集")
+        homepage_data = self.crawl_homepage()
         
-        # 显示所有分类的汇总信息
-        logger.info("=== 分类抓取汇总 ===")
-        for category_name, category_info in categories_data.items():
+        if not homepage_data:
+            logger.error("首页抓取失败")
+            return
+        
+        # 生成首页HTML
+        self.generate_index_html(homepage_data)
+        
+        # 显示首页抓取结果
+        logger.info("=== 首页抓取汇总 ===")
+        for category_name, category_info in homepage_data.items():
             items = category_info.get('items', [])
             logger.info(f"{category_name}: {len(items)} 部剧集")
             for item in items:
                 logger.info(f"  - {item['title']} -> {item['url']}")
         
-        # 3. 抓取所有剧集详情（多线程版本）
-        logger.info("开始抓取所有剧集详情...")
-        logger.info(f"使用多线程模式，最大线程数: {self.max_workers}")
+        # 收集首页剧集
+        homepage_series = []
+        homepage_urls = set()
+        for category_name, category_info in homepage_data.items():
+            for item in category_info.get('items', []):
+                homepage_series.append({
+                    'item': item,
+                    'category_name': category_name,
+                    'source': 'homepage'
+                })
+                homepage_urls.add(item['url'])
         
-        # 收集所有需要抓取的剧集
-        all_series = []
-        total_count = sum(len(info['items']) for info in categories_data.values())
+        # 第二步：检查是否有遗漏（如果启用）
+        if check_missing and use_category_pages:
+            logger.info("=== 第二步：检查遗漏内容 ===")
+            logger.info("使用分类页面抓取模式检查是否有遗漏的剧集")
+            
+            categories_data = self.crawl_all_categories()
+            
+            if categories_data:
+                # 收集分类页面剧集
+                category_series = []
+                category_urls = set()
+                for category_name, category_info in categories_data.items():
+                    for item in category_info.get('items', []):
+                        category_series.append({
+                            'item': item,
+                            'category_name': category_name,
+                            'source': 'category'
+                        })
+                        category_urls.add(item['url'])
+                
+                # 找出遗漏的剧集
+                missing_urls = category_urls - homepage_urls
+                missing_series = [s for s in category_series if s['item']['url'] in missing_urls]
+                
+                if missing_series:
+                    logger.info(f"发现 {len(missing_series)} 个遗漏的剧集")
+                    logger.info("=== 遗漏剧集列表 ===")
+                    for series in missing_series:
+                        logger.info(f"  - {series['item']['title']} -> {series['item']['url']} ({series['category_name']})")
+                    
+                    # 将遗漏的剧集添加到总列表中
+                    homepage_series.extend(missing_series)
+                    logger.info(f"总共需要抓取 {len(homepage_series)} 个剧集（首页 {len(homepage_urls)} + 遗漏 {len(missing_series)}）")
+                else:
+                    logger.info("没有发现遗漏的剧集，所有剧集都已包含在首页中")
+            else:
+                logger.warning("分类页面抓取失败，仅使用首页数据")
+        else:
+            logger.info("跳过遗漏检查，仅使用首页数据")
+        
+        # 第三步：抓取所有剧集详情
+        logger.info("=== 第三步：抓取剧集详情 ===")
+        logger.info(f"使用多级线程池模式:")
+        logger.info(f"  - 剧集级线程池: {self.max_series_workers} 个线程")
+        logger.info(f"  - 集数级线程池: {self.max_episode_workers} 个线程")
+        logger.info(f"  - 批处理大小: {self.batch_size} 个剧集")
+        logger.info(f"  - 内存限制: {self.memory_limit_mb}MB")
+        
+        # 统计信息
+        total_count = len(homepage_series)
         self.stats['total_series'] = total_count
         
-        for category_name, category_info in categories_data.items():
-            logger.info(f"准备抓取 {category_info['name']} 分类，共 {len(category_info['items'])} 部剧集")
+        # 过滤无效剧集
+        valid_series = []
+        for series_data in homepage_series:
+            item = series_data['item']
+            series_id = item['series_id']
             
-            for item in category_info['items']:
-                series_id = item['series_id']
-                
-                if not series_id:
-                    logger.warning(f"跳过空剧集ID: {item['title']}")
-                    continue
-                
-                # 检查series_id是否包含无效文件名字符
-                invalid_chars = ['?', '&', '=', '<', '>', ':', '"', '|', '*']
-                if any(char in series_id for char in invalid_chars):
-                    logger.warning(f"跳过包含无效字符的剧集ID '{series_id}': {item['title']}")
-                    continue
-                
-                all_series.append({
-                    'item': item,
-                    'category_name': category_name
-                })
+            if not series_id:
+                logger.warning(f"跳过空剧集ID: {item['title']}")
+                continue
+            
+            # 检查series_id是否包含无效文件名字符
+            invalid_chars = ['?', '&', '=', '<', '>', ':', '"', '|', '*']
+            if any(char in series_id for char in invalid_chars):
+                logger.warning(f"跳过包含无效字符的剧集ID '{series_id}': {item['title']}")
+                continue
+            
+            valid_series.append(series_data)
         
-        # 使用线程池进行并发抓取
-        self.crawl_series_with_threads(all_series, total_count)
+        # 分批处理剧集，避免内存占用过高
+        self.crawl_series_in_batches(valid_series, total_count)
         
         # 输出统计信息
         logger.info("=== 抓取统计 ===")
@@ -2506,10 +2841,164 @@ class YatuTVCrawler:
         
         logger.info("=== 抓取完成 ===")
 
-    def crawl_series_with_threads(self, all_series, total_count):
-        """使用多线程抓取剧集详情"""
+    def crawl_series_in_batches(self, all_series, total_count):
+        """分批处理剧集，避免内存占用过高"""
+        logger.info(f"开始分批处理 {len(all_series)} 个剧集，每批 {self.batch_size} 个")
+        
+        batch_data = []  # 当前批次的数据
         completed_count = 0
         failed_count = 0
+        
+        # 显示初始内存使用情况
+        initial_memory = self.get_memory_usage()
+        logger.info(f"初始内存使用: {initial_memory:.1f}MB")
+        
+        for i in range(0, len(all_series), self.batch_size):
+            batch = all_series[i:i + self.batch_size]
+            batch_num = i // self.batch_size + 1
+            total_batches = (len(all_series) + self.batch_size - 1) // self.batch_size
+            
+            logger.info(f"=== 处理第 {batch_num}/{total_batches} 批 ({len(batch)} 个剧集) ===")
+            
+            # 检查内存使用情况
+            current_memory = self.get_memory_usage()
+            logger.info(f"当前内存使用: {current_memory:.1f}MB")
+            
+            if self.check_memory_limit():
+                logger.warning("内存使用过高，强制清理内存")
+                self.clear_memory()
+            
+            # 处理当前批次
+            batch_results = self.process_batch(batch, completed_count, total_count)
+            
+            # 收集成功的结果
+            for result in batch_results:
+                if result['success']:
+                    batch_data.append(result['data'])
+                    completed_count += 1
+                else:
+                    failed_count += 1
+            
+            # 定期保存数据
+            if len(batch_data) >= self.save_interval:
+                self.save_batch_data(batch_data)
+                batch_data = []  # 清空批次数据
+            
+            # 定期垃圾回收
+            if self.processed_count % self.gc_interval == 0:
+                logger.info("执行定期垃圾回收...")
+                self.force_garbage_collection()
+            
+            # 批次间暂停，避免请求过快
+            if batch_num < total_batches:
+                logger.info("批次间暂停 2 秒...")
+                time.sleep(2)
+        
+        # 保存剩余的数据
+        if batch_data:
+            self.save_batch_data(batch_data)
+        
+        # 最终内存清理
+        self.clear_memory()
+        
+        # 显示最终统计
+        final_memory = self.get_memory_usage()
+        logger.info(f"=== 分批处理完成 ===")
+        logger.info(f"总剧集数: {total_count}")
+        logger.info(f"成功处理: {completed_count}")
+        logger.info(f"失败数量: {failed_count}")
+        logger.info(f"最终内存使用: {final_memory:.1f}MB (初始: {initial_memory:.1f}MB)")
+    
+    def process_batch(self, batch, completed_count, total_count):
+        """处理单个批次的剧集"""
+        results = []
+        
+        # 初始化集数级线程池
+        self.episode_thread_pool = ThreadPoolExecutor(max_workers=self.max_episode_workers)
+        
+        try:
+            # 使用线程池处理批次
+            with ThreadPoolExecutor(max_workers=self.max_series_workers) as executor:
+                # 提交所有任务
+                future_to_series = {
+                    executor.submit(self.crawl_single_series_optimized, series_data, completed_count + i, total_count): series_data 
+                    for i, series_data in enumerate(batch)
+                }
+                
+                # 收集结果
+                for future in as_completed(future_to_series):
+                    series_data = future_to_series[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(f"处理剧集异常: {series_data['item']['title']} - {e}")
+                        results.append({
+                            'success': False,
+                            'data': None,
+                            'error': str(e)
+                        })
+        finally:
+            # 清理线程池
+            if self.episode_thread_pool:
+                self.episode_thread_pool.shutdown(wait=True)
+                self.episode_thread_pool = None
+        
+        return results
+    
+    def crawl_single_series_optimized(self, series_data, current_count, total_count):
+        """优化的单个剧集抓取函数"""
+        item = series_data['item']
+        category_name = series_data['category_name']
+        series_id = item['series_id']
+        
+        # 为每个线程创建独立的session
+        thread_session = requests.Session()
+        thread_session.headers.update(self.session.headers)
+        
+        try:
+            logger.info(f"[{current_count}/{total_count}] 正在抓取: {item['title']}")
+            logger.info(f"详情页地址: {item['url']}")
+            
+            # 抓取详情，传递分类信息和session
+            series_info = self.crawl_series_detail_with_episode_pool(
+                item['url'], series_id, item['category'], thread_session
+            )
+            
+            if series_info:
+                logger.info(f"✓ 完成: {item['title']} ({len(series_info['episodes'])}集)")
+                self.processed_count += 1
+                return {
+                    'success': True,
+                    'data': series_info,
+                    'error': None
+                }
+            else:
+                logger.error(f"✗ 失败: {item['title']}")
+                return {
+                    'success': False,
+                    'data': None,
+                    'error': '抓取失败'
+                }
+                
+        except Exception as e:
+            logger.error(f"✗ 抓取异常: {item['title']} - {str(e)}")
+            return {
+                'success': False,
+                'data': None,
+                'error': str(e)
+            }
+        finally:
+            # 清理session
+            thread_session.close()
+
+    def crawl_series_with_threads(self, all_series, total_count):
+        """使用多级线程池抓取剧集详情"""
+        completed_count = 0
+        failed_count = 0
+        
+        # 初始化集数级线程池
+        self.episode_thread_pool = ThreadPoolExecutor(max_workers=self.max_episode_workers)
         
         def crawl_single_series(series_data):
             """单个线程抓取剧集的函数"""
@@ -2531,7 +3020,9 @@ class YatuTVCrawler:
                     logger.info(f"详情页地址: {item['url']}")
                 
                 # 抓取详情，传递分类信息和session
-                series_info = self.crawl_series_detail(item['url'], series_id, item['category'], thread_session)
+                series_info = self.crawl_series_detail_with_episode_pool(
+                    item['url'], series_id, item['category'], thread_session
+                )
                 
                 if series_info:
                     # 保存数据（需要线程锁保护）
@@ -2556,8 +3047,8 @@ class YatuTVCrawler:
                     failed_count += 1
                 return False
         
-        # 使用线程池执行抓取任务
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        # 使用剧集级线程池执行抓取任务
+        with ThreadPoolExecutor(max_workers=self.max_series_workers) as executor:
             # 提交所有任务
             future_to_series = {
                 executor.submit(crawl_single_series, series_data): series_data 
@@ -2578,7 +3069,11 @@ class YatuTVCrawler:
                     with self.thread_lock:
                         self.stats['total_failures'] += 1
         
-        logger.info(f"多线程抓取完成！成功: {self.stats['successful_series']}, 失败: {failed_count}")
+        # 关闭集数级线程池
+        if self.episode_thread_pool:
+            self.episode_thread_pool.shutdown(wait=True)
+        
+        logger.info(f"多级线程池抓取完成！成功: {self.stats['successful_series']}, 失败: {failed_count}")
 
     def _extract_iframe_from_js(self, html):
         """从JavaScript中提取iframe链接"""
@@ -3014,7 +3509,503 @@ class YatuTVCrawler:
             logger.debug(f"URL验证失败: {e}")
             return False
 
+    def extract_title(self, soup):
+        """提取剧集标题"""
+        try:
+            title_elem = soup.find('h1') or soup.find('title')
+            if title_elem:
+                return title_elem.get_text(strip=True)
+            return ""
+        except:
+            return ""
+    
+    def extract_description(self, soup):
+        """提取剧集描述"""
+        try:
+            desc_elem = soup.find('div', class_='des') or soup.find('div', class_='description')
+            if desc_elem:
+                return desc_elem.get_text(strip=True)
+            return ""
+        except:
+            return ""
+    
+    def extract_year(self, soup):
+        """提取年份"""
+        try:
+            year_elem = soup.find(text=re.compile(r'\d{4}'))
+            if year_elem:
+                year_match = re.search(r'\d{4}', year_elem)
+                if year_match:
+                    return year_match.group()
+            return ""
+        except:
+            return ""
+    
+    def extract_country(self, soup):
+        """提取国家"""
+        try:
+            country_elem = soup.find(text=re.compile(r'地区|国家'))
+            if country_elem:
+                return country_elem.get_text(strip=True)
+            return ""
+        except:
+            return ""
+    
+    def extract_language(self, soup):
+        """提取语言"""
+        try:
+            lang_elem = soup.find(text=re.compile(r'语言'))
+            if lang_elem:
+                return lang_elem.get_text(strip=True)
+            return ""
+        except:
+            return ""
+    
+    def extract_director(self, soup):
+        """提取导演"""
+        try:
+            director_elem = soup.find(text=re.compile(r'导演'))
+            if director_elem:
+                return director_elem.get_text(strip=True)
+            return ""
+        except:
+            return ""
+    
+    def extract_actors(self, soup):
+        """提取演员"""
+        try:
+            actors_elem = soup.find(text=re.compile(r'主演|演员'))
+            if actors_elem:
+                return actors_elem.get_text(strip=True)
+            return ""
+        except:
+            return ""
+    
+    def extract_cover_image(self, soup):
+        """提取封面图片URL"""
+        try:
+            # 方法1: 查找常见的封面图片元素
+            cover_selectors = [
+                'img[src*="poster"]',
+                'img[src*="cover"]',
+                'img[src*="thumb"]',
+                '.poster img',
+                '.cover img',
+                '.thumb img',
+                '.pic img',
+                '.img img',
+                'img[class*="poster"]',
+                'img[class*="cover"]',
+                'img[class*="thumb"]'
+            ]
+            
+            for selector in cover_selectors:
+                img_elem = soup.select_one(selector)
+                if img_elem and img_elem.get('src'):
+                    src = img_elem.get('src')
+                    if src.startswith('http'):
+                        return src
+                    elif src.startswith('//'):
+                        return 'https:' + src
+                    elif src.startswith('/'):
+                        return 'https://www.yatu.tv' + src
+            
+            # 方法2: 查找所有图片，选择最大的作为封面
+            all_images = soup.find_all('img')
+            max_size = 0
+            best_image = None
+            
+            for img in all_images:
+                src = img.get('src', '')
+                if not src or src.startswith('data:'):
+                    continue
+                
+                # 检查图片尺寸
+                width = img.get('width', '0')
+                height = img.get('height', '0')
+                try:
+                    w = int(width) if width.isdigit() else 0
+                    h = int(height) if height.isdigit() else 0
+                    size = w * h
+                    if size > max_size and size > 10000:  # 至少100x100像素
+                        max_size = size
+                        best_image = src
+                except:
+                    continue
+            
+            if best_image:
+                if best_image.startswith('http'):
+                    return best_image
+                elif best_image.startswith('//'):
+                    return 'https:' + best_image
+                elif best_image.startswith('/'):
+                    return 'https://www.yatu.tv' + best_image
+            
+            return ""
+        except Exception as e:
+            logger.debug(f"提取封面图片失败: {e}")
+            return ""
+    
+    def download_cover_image(self, cover_url, series_id, session):
+        """下载并保存封面图片"""
+        try:
+            # 确保剧集目录存在
+            series_dir = os.path.join(self.data_dir, series_id)
+            if not os.path.exists(series_dir):
+                os.makedirs(series_dir)
+            
+            # 获取图片内容
+            response = session.get(cover_url, timeout=10, stream=True)
+            response.raise_for_status()
+            
+            # 获取文件扩展名
+            content_type = response.headers.get('content-type', '')
+            if 'image/jpeg' in content_type or 'image/jpg' in content_type:
+                ext = '.jpg'
+            elif 'image/png' in content_type:
+                ext = '.png'
+            elif 'image/gif' in content_type:
+                ext = '.gif'
+            elif 'image/webp' in content_type:
+                ext = '.webp'
+            else:
+                # 从URL推断扩展名
+                parsed_url = urllib.parse.urlparse(cover_url)
+                path = parsed_url.path.lower()
+                if '.jpg' in path or '.jpeg' in path:
+                    ext = '.jpg'
+                elif '.png' in path:
+                    ext = '.png'
+                elif '.gif' in path:
+                    ext = '.gif'
+                elif '.webp' in path:
+                    ext = '.webp'
+                else:
+                    ext = '.jpg'  # 默认使用jpg
+            
+            # 保存图片文件
+            cover_filename = f"cover{ext}"
+            cover_path = os.path.join(series_dir, cover_filename)
+            
+            with open(cover_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            logger.info(f"✓ 封面图片已保存: {cover_path}")
+            return cover_filename
+            
+        except Exception as e:
+            logger.warning(f"下载封面图片失败: {cover_url} - {e}")
+            return None
+
+    def run_multithread_crawl(self):
+        """多线程剧集采集模式"""
+        logger.info("=== 开始多线程剧集采集 ===")
+        start_time = time.time()
+        
+        # 显示初始内存使用情况
+        initial_memory = self.get_memory_usage()
+        logger.info(f"初始内存使用: {initial_memory:.1f}MB")
+        
+        try:
+            # 采集所有分类的剧集
+            all_series = self.crawl_all_categories_multithread()
+            
+            if all_series:
+                # 保存结果到JSON文件
+                output_file = "data/all_categories_series_multithread.json"
+                os.makedirs("data", exist_ok=True)
+                
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(all_series, f, ensure_ascii=False, indent=2)
+                
+                logger.info(f"采集完成，共 {len(all_series)} 个剧集")
+                logger.info(f"结果已保存到: {output_file}")
+                
+                # 显示最终内存使用情况
+                final_memory = self.get_memory_usage()
+                logger.info(f"最终内存使用: {final_memory:.1f}MB (初始: {initial_memory:.1f}MB)")
+                
+                # 清理内存
+                self.clear_memory()
+            else:
+                logger.error("采集失败，未获取到任何剧集")
+                
+        except Exception as e:
+            logger.error(f"多线程采集异常: {e}")
+        finally:
+            # 最终内存清理
+            self.clear_memory()
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        logger.info(f"多线程采集耗时: {duration:.2f} 秒")
+
+    def crawl_page_with_thread(self, page_info):
+        """单个页面采集任务"""
+        category_name, category_url, page, thread_id = page_info
+        
+        try:
+            # 为每个线程创建独立的爬虫实例
+            crawler = YatuTVCrawler()
+            
+            # 构建分页URL
+            if page == 1:
+                page_url = category_url
+            else:
+                page_url = f"{category_url.rstrip('/')}/{page}.html"
+            
+            logger.info(f"[线程{thread_id}] 正在采集 {category_name} 第 {page} 页: {page_url}")
+            
+            # 设置当前URL用于最后一页检测
+            crawler.current_url = page_url
+            
+            html = crawler.get_page(page_url)
+            if not html:
+                logger.warning(f"[线程{thread_id}] 无法获取 {category_name} 第 {page} 页内容")
+                return None
+            
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # 查找剧集列表
+            items = crawler._extract_series_items(soup, category_name)
+            if not items:
+                logger.info(f"[线程{thread_id}] {category_name} 第 {page} 页没有找到剧集")
+                return {'is_last': True, 'items': [], 'category': category_name, 'page': page}
+            
+            # 检查是否到达最后一页
+            if crawler._is_last_page(soup):
+                logger.info(f"[线程{thread_id}] {category_name} 第 {page} 页是最后一页")
+                return {'is_last': True, 'items': items, 'category': category_name, 'page': page}
+            
+            logger.info(f"[线程{thread_id}] {category_name} 第 {page} 页采集到 {len(items)} 个剧集")
+            
+            return {'is_last': False, 'items': items, 'category': category_name, 'page': page}
+            
+        except Exception as e:
+            logger.error(f"[线程{thread_id}] 采集 {category_name} 第 {page} 页时出错: {e}")
+            return None
+
+    def crawl_category_multithread(self, category_name, category_url, max_workers=10, max_pages=1000):
+        """使用多线程采集单个分类"""
+        logger.info(f"开始多线程采集 {category_name} 分类: {category_url}")
+        
+        all_series = []
+        last_page_found = False
+        page = 1
+        batch_size = 5  # 每批处理5页
+        
+        while page <= max_pages and not last_page_found:
+            # 创建当前批次的页面列表
+            batch_pages = []
+            for i in range(batch_size):
+                if page + i <= max_pages:
+                    batch_pages.append((category_name, category_url, page + i, f"B{page+i}"))
+            
+            # 使用线程池批量处理
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有批次任务
+                future_to_page = {executor.submit(self.crawl_page_with_thread, page_info): page_info for page_info in batch_pages}
+                
+                # 处理完成的任务
+                for future in as_completed(future_to_page):
+                    page_info = future_to_page[future]
+                    try:
+                        result = future.result()
+                        
+                        if result is None:
+                            continue
+                        
+                        # 处理结果
+                        if result['is_last']:
+                            last_page_found = True
+                            logger.info(f"{category_name} 在第 {result['page']} 页到达最后一页")
+                        
+                        # 添加剧集到结果
+                        if result['items']:
+                            all_series.extend(result['items'])
+                            
+                            # 显示前3个剧集
+                            logger.info(f"{category_name} 第 {result['page']} 页剧集列表:")
+                            for i, item in enumerate(result['items'][:3]):
+                                logger.info(f"  {i+1}. {item['title']} -> {item['url']}")
+                            if len(result['items']) > 3:
+                                logger.info(f"  ... 还有 {len(result['items'])-3} 个剧集")
+                        
+                    except Exception as e:
+                        logger.error(f"处理页面 {page_info} 时出错: {e}")
+            
+            # 移动到下一批次
+            page += batch_size
+            
+            # 避免请求过快
+            time.sleep(1)
+        
+        logger.info(f"{category_name} 分类总共采集到 {len(all_series)} 个剧集")
+        return all_series
+
+    def crawl_all_categories_multithread(self):
+        """使用多线程采集所有分类"""
+        # 定义分类页面URL
+        categories = {
+            '动漫': 'https://www.yatu.tv/m-dm/',
+            '电影': 'https://www.yatu.tv/m-dy/',
+            '电视剧': 'https://www.yatu.tv/m-tv/'
+        }
+        
+        all_series = []
+        
+        # 为每个分类使用多线程采集
+        for category_name, category_url in categories.items():
+            logger.info(f"开始采集 {category_name} 分类: {category_url}")
+            
+            # 检查内存使用情况
+            current_memory = self.get_memory_usage()
+            logger.info(f"当前内存使用: {current_memory:.1f}MB")
+            
+            if self.check_memory_limit():
+                logger.warning("内存使用过高，强制清理内存")
+                self.clear_memory()
+            
+            # 采集当前分类
+            category_series = self.crawl_category_multithread(category_name, category_url, max_workers=10)
+            all_series.extend(category_series)
+            
+            # 显示分类统计
+            logger.info(f"{category_name} 分类剧集详情:")
+            for i, item in enumerate(category_series[:5]):  # 只显示前5个
+                logger.info(f"  {i+1}. {item['title']} -> {item['url']}")
+            if len(category_series) > 5:
+                logger.info(f"  ... 还有 {len(category_series)-5} 个剧集")
+            
+            logger.info("-" * 50)
+            
+            # 分类间暂停，避免请求过快
+            time.sleep(1)
+        
+        # 去重处理
+        unique_series = []
+        seen_urls = set()
+        
+        for series in all_series:
+            if series['url'] not in seen_urls:
+                unique_series.append(series)
+                seen_urls.add(series['url'])
+        
+        logger.info(f"去重后总共采集到 {len(unique_series)} 个唯一剧集")
+        
+        # 清理原始数据
+        all_series.clear()
+        seen_urls.clear()
+        
+        return unique_series
+
+    def get_memory_usage(self):
+        """获取当前内存使用情况"""
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        return memory_info.rss / 1024 / 1024  # 转换为MB
+    
+    def check_memory_limit(self):
+        """检查内存使用是否超过限制"""
+        current_memory = self.get_memory_usage()
+        if current_memory > self.memory_limit_mb:
+            logger.warning(f"内存使用过高: {current_memory:.1f}MB > {self.memory_limit_mb}MB")
+            return True
+        return False
+    
+    def force_garbage_collection(self):
+        """强制垃圾回收"""
+        import gc
+        collected = gc.collect()
+        logger.debug(f"垃圾回收完成，释放了 {collected} 个对象")
+    
+    def clear_memory(self):
+        """清理内存"""
+        # 清理线程池结果缓存
+        self.episode_results.clear()
+        self.episode_queue.clear()
+        
+        # 强制垃圾回收
+        self.force_garbage_collection()
+        
+        # 显示内存使用情况
+        current_memory = self.get_memory_usage()
+        logger.info(f"内存清理完成，当前使用: {current_memory:.1f}MB")
+    
+    def save_batch_data(self, batch_data):
+        """批量保存数据"""
+        if not batch_data:
+            return
+        
+        logger.info(f"批量保存 {len(batch_data)} 个剧集数据...")
+        
+        for series_info in batch_data:
+            try:
+                self.save_series_data(series_info)
+                self.stats['successful_series'] += 1
+            except Exception as e:
+                logger.error(f"保存剧集数据失败: {series_info.get('title', 'Unknown')} - {e}")
+        
+        # 清理批量数据
+        batch_data.clear()
+        
+        # 强制垃圾回收
+        self.force_garbage_collection()
+
 if __name__ == "__main__":
+    import sys
+    
     crawler = YatuTVCrawler()
-    # 默认使用分类页面抓取，如需使用首页抓取请设置为False
-    crawler.run(use_category_pages=True)
+    
+    # 检查命令行参数
+    if len(sys.argv) > 1:
+        mode = sys.argv[1].lower()
+        if mode == "multithread" or mode == "mt":
+            # 多线程剧集采集模式
+            print("启动多线程剧集采集模式...")
+            crawler.run(use_multithread_crawl=True)
+        elif mode == "homepage" or mode == "hp":
+            # 仅首页抓取模式
+            print("启动仅首页抓取模式...")
+            crawler.run(use_category_pages=False, check_missing=False)
+        elif mode == "category" or mode == "cat":
+            # 仅分类页面抓取模式
+            print("启动仅分类页面抓取模式...")
+            crawler.run(use_category_pages=True, check_missing=False)
+        elif mode == "full" or mode == "complete":
+            # 完整抓取模式（默认）：首页+遗漏检查
+            print("启动完整抓取模式（首页+遗漏检查）...")
+            crawler.run(use_category_pages=True, check_missing=True)
+        elif mode == "help" or mode == "h":
+            # 显示帮助信息
+            print("雅图TV抓取工具使用方法:")
+            print("")
+            print("  python app.py                    # 默认完整抓取（首页+遗漏检查）")
+            print("  python app.py full               # 完整抓取模式（首页+遗漏检查）")
+            print("  python app.py complete           # 完整抓取模式（首页+遗漏检查）")
+            print("  python app.py multithread        # 多线程剧集采集")
+            print("  python app.py mt                 # 多线程剧集采集(简写)")
+            print("  python app.py homepage           # 仅首页抓取")
+            print("  python app.py hp                 # 仅首页抓取(简写)")
+            print("  python app.py category           # 仅分类页面抓取")
+            print("  python app.py cat                # 仅分类页面抓取(简写)")
+            print("  python app.py help               # 显示此帮助信息")
+            print("")
+            print("模式说明:")
+            print("  - 完整抓取: 先抓取首页最新内容，再检查分类页面是否有遗漏")
+            print("  - 多线程采集: 使用10个线程快速采集所有分类的剧集列表")
+            print("  - 仅首页抓取: 只抓取首页显示的最新剧集")
+            print("  - 仅分类抓取: 只抓取分类页面的剧集，不抓取首页")
+        else:
+            print("未知模式，使用方法:")
+            print("  python app.py help               # 查看详细帮助")
+            print("  python app.py                    # 默认完整抓取")
+            print("  python app.py multithread        # 多线程剧集采集")
+            print("  python app.py full               # 完整抓取模式")
+    else:
+        # 默认使用完整抓取模式（首页+遗漏检查）
+        print("启动默认完整抓取模式（首页+遗漏检查）...")
+        crawler.run(use_category_pages=True, check_missing=True)
